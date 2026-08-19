@@ -220,8 +220,12 @@ with st.sidebar:
         pdf_file = st.file_uploader(
             "Upload a PDF article",
             type=["pdf"],
+            help="Accepted: .pdf up to 5MB (~1–5 pages)",
             label_visibility="collapsed",
         )
+        st.caption("Accepted: .pdf up to 5MB (~1–5 pages)")
+        if pdf_file is not None and pdf_file.size > 5 * 1024 * 1024:
+            st.error("⚠️ File size exceeds 5MB limit. Please upload a smaller PDF.")
 
     with tab_text:
         raw_text = st.text_area(
@@ -321,6 +325,8 @@ if generate_clicked:
     has_input = bool(url_input) or bool(pdf_file) or bool(raw_text)
     if not has_input:
         st.sidebar.error("Please provide a URL, PDF, or text before generating.")
+    elif pdf_file is not None and pdf_file.size > 5 * 1024 * 1024:
+        st.sidebar.error("PDF file exceeds the 5MB limit. Please upload a smaller file.")
     else:
         st.session_state.generating = True
         st.session_state.generation_done = False

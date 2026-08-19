@@ -18,7 +18,7 @@ The frontend must integrate seamlessly with the following backend pipeline:
 ### B. Multi-Source Ingestion (Replacing Raw Text Only)
 Provide a tabbed or toggle-based input container with three options:
 1. **URL Input:** Input field for news article links (scraped via backend scraper).
-2. **PDF Upload:** File upload drag-and-drop zone (`.pdf` format).
+2. **PDF Upload:** File upload drag-and-drop zone (`.pdf` format). Displays `Accepted: .pdf up to 5MB (~1–5 pages)`.
 3. **Raw Text:** Textarea for pasting manual text directly.
 
 *Constraint Logic:* Include a warning note that long articles will automatically be summarized into a concise news script tailored for a 1-to-2 minute target video.
