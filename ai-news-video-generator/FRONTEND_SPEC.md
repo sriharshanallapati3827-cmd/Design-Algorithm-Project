@@ -1,7 +1,7 @@
-# TASK SPECIFICATION: AI NEWS Generator - Frontend UI & Architecture
+# TASK SPECIFICATION: AI NEWS Video Generator - Frontend UI & Architecture
 
 ## 1. Executive Summary & Naming
-- **Project Name:** `AI NEWS Generator`
+- **Project Name:** `AI NEWS Video Generator`
 - **Goal:** Redesign and implement the frontend interface based on the reference layout while shifting control from manual frame count to video duration (1–2 minutes).
 
 ---
@@ -13,7 +13,7 @@ The frontend must integrate seamlessly with the following backend pipeline:
 ## 3. Left Sidebar Configuration (Syncing with Reference Layout)
 
 ### A. Brand Header
-- Change top logo title to **`AI NEWS Generator`**.
+- Change top logo title to **`AI NEWS Video Generator`**.
 
 ### B. Multi-Source Ingestion (Replacing Raw Text Only)
 Provide a tabbed or toggle-based input container with three options:

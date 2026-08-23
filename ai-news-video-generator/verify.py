@@ -1,5 +1,5 @@
 """
-Verification script for AI NEWS Generator frontend.
+Verification script for AI NEWS Video Generator frontend.
 Run after installing dependencies:  python verify.py
 """
 
@@ -78,7 +78,7 @@ def main():
         with open("app.py", "r", encoding="utf-8") as f:
             source = f.read()
 
-        all_ok &= check("Brand: AI NEWS Generator", "AI NEWS Generator" in source)
+        all_ok &= check("Brand: AI NEWS Video Generator", "AI NEWS Video Generator" in source)
         all_ok &= check("Tab: URL input", "URL" in source and "text_input" in source)
         all_ok &= check("Tab: PDF upload", "file_uploader" in source and "pdf" in source)
         all_ok &= check("Tab: Raw Text", "text_area" in source)

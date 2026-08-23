@@ -1,6 +1,6 @@
 """
-Ingestion Module — AI NEWS Generator
-======================================
+Ingestion Module — AI NEWS Video Generator
+===========================================
 Provides helpers for extracting article text from URLs, PDFs, and raw text.
 
 Functions:

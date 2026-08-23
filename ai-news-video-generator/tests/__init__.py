@@ -1,1 +1,1 @@
-# AI NEWS Generator — Test Suite
+# AI NEWS Video Generator — Test Suite

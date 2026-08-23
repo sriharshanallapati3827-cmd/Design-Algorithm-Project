@@ -1,12 +1,13 @@
 """
-AI NEWS Generator — Streamlit Frontend
-========================================
+AI NEWS Video Generator — Streamlit Frontend
+==============================================
 Main application file implementing the UI from FRONTEND_SPEC.md.
 
 Run with:  streamlit run app.py
 """
 
 import time
+import io
 import streamlit as st
 from utils import (
     calculate_scene_range,
@@ -18,12 +19,24 @@ from utils import (
 from ingestion import extract_text_from_url, extract_text_from_pdf, clean_text_input
 from director import generate_storyboard, MODEL_MAP
 
+# Phase 3 — Local GPU image engine (optional; falls back to placeholders)
+try:
+    from generator import (
+        generate_scene_image,
+        image_to_bytes,
+        get_gpu_info,
+        get_pipeline,
+    )
+    GPU_ENGINE_AVAILABLE = True
+except ImportError:
+    GPU_ENGINE_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # Page config & custom CSS
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="AI NEWS Generator",
+    page_title="AI NEWS Video Generator",
     page_icon="🎬",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -33,35 +46,201 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* ---- Global overrides ---- */
+    /* ---- Google Font Import ---- */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+    /* ---- Global overrides & Design Tokens ---- */
     :root {
         --bg-primary: #0B0F17;
         --bg-secondary: #121824;
+        --bg-card: #161F30;
         --accent: #F5A623;
-        --text-primary: #EAEAEA;
-        --text-muted: #8892A4;
+        --accent-hover: #FFAF38;
+        --text-primary: #F0F4F8;
+        --text-muted: #94A3B8;
+        --border-color: #1E293B;
+        --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
 
-    /* Sidebar styling */
+    /* Global typography application (preserving Streamlit icon fonts) */
+    html, body, .stApp {
+        font-family: var(--font-family);
+        letter-spacing: -0.01em;
+    }
+
+    p, h1, h2, h3, h4, h5, h6, input, textarea, select, .scene-badge, .pro-tips, .warning-note {
+        font-family: var(--font-family) !important;
+    }
+
+    /* Preserve Material Symbols & Streamlit icon ligatures */
+    span[data-testid="stIconMaterial"],
+    [class*="material-symbols"],
+    [class*="material-icons"],
+    button[data-testid="collapsedControl"] *,
+    button[kind="header"] *,
+    [data-testid="stSidebarCollapseButton"] * {
+        font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+    }
+
+    /* Clean, modern styling for the collapsed sidebar double arrow */
+    div[data-testid="stSidebarCollapsedControl"] {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        z-index: 99999 !important;
+        margin: 10px 0 0 10px !important;
+    }
+
+    button[data-testid="collapsedControl"],
+    div[data-testid="stSidebarCollapsedControl"] button {
+        background-color: var(--bg-secondary) !important;
+        border: 1px solid var(--border-color) !important;
+        border-radius: 8px !important;
+        padding: 6px 10px !important;
+        cursor: pointer !important;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
+        transition: all 0.2s ease !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    button[data-testid="collapsedControl"]:hover,
+    div[data-testid="stSidebarCollapsedControl"] button:hover {
+        background-color: var(--bg-card) !important;
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 14px rgba(245, 166, 35, 0.3) !important;
+    }
+
+    button[data-testid="collapsedControl"] span,
+    div[data-testid="stSidebarCollapsedControl"] button span {
+        color: var(--accent) !important;
+        font-size: 1.3rem !important;
+    }
+
+    /* Collapse button when sidebar is open */
+    div[data-testid="stSidebarCollapseButton"] button {
+        background-color: transparent !important;
+        border: 1px solid transparent !important;
+        border-radius: 6px !important;
+        transition: all 0.2s ease !important;
+    }
+
+    div[data-testid="stSidebarCollapseButton"] button:hover {
+        border-color: var(--border-color) !important;
+        background-color: var(--bg-primary) !important;
+    }
+
+    div[data-testid="stSidebarCollapseButton"] button span {
+        color: var(--accent) !important;
+    }
+
+    p, span:not([data-testid="stIconMaterial"]), li, div {
+        line-height: 1.55;
+    }
+
+    /* Full width flexible main containers */
+    .stApp {
+        background-color: var(--bg-primary);
+        width: 100%;
+        max-width: 100%;
+        overflow-x: hidden;
+    }
+
+    .main {
+        width: 100%;
+        overflow-x: hidden;
+    }
+
+    .main .block-container {
+        padding: clamp(1rem, 3vw, 2.5rem) clamp(0.75rem, 2.5vw, 2rem) !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        overflow-x: hidden;
+        min-height: 100vh !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 2. Sidebar Transitions & Layout                              */
+    /* ------------------------------------------------------------- */
     section[data-testid="stSidebar"] {
         background-color: var(--bg-secondary) !important;
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+                    width 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
 
+    section[data-testid="stSidebar"] > div {
+        padding-top: clamp(1rem, 2.5vw, 2rem) !important;
+        padding-left: clamp(0.75rem, 2vw, 1.25rem) !important;
+        padding-right: clamp(0.75rem, 2vw, 1.25rem) !important;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 3. Input Type Container (Flexbox)                             */
+    /* ------------------------------------------------------------- */
+    div[data-testid="stTabs"] [role="tablist"],
+    .stTabs [data-baseweb="tab-list"] {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: space-between !important;
+        gap: clamp(8px, 1.5vw, 16px) !important;
+        width: 100% !important;
+        flex-wrap: wrap !important;
+        border-bottom: 1px solid var(--border-color) !important;
+        padding-bottom: 6px !important;
+        margin-bottom: 12px !important;
+    }
+
+    div[data-testid="stTabs"] [role="tab"],
+    .stTabs [data-baseweb="tab"] {
+        flex: 1 1 auto !important;
+        min-width: 75px !important;
+        text-align: center !important;
+        justify-content: center !important;
+        padding: clamp(6px, 1.2vw, 10px) clamp(8px, 1.5vw, 14px) !important;
+        border-radius: 6px !important;
+        transition: all 0.2s ease-in-out !important;
+        font-size: clamp(0.76rem, 1vw + 0.45rem, 0.88rem) !important;
+        font-weight: 500 !important;
+    }
+
+    /* Flexible components with percentage widths */
+    div[data-testid="stTextInput"],
+    div[data-testid="stTextArea"],
+    div[data-testid="stFileUploader"],
+    div[data-testid="stSelectbox"],
+    div[data-testid="stSlider"],
+    div[data-testid="stButton"] {
+        width: 100% !important;
+        box-sizing: border-box !important;
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 4. Fluid Typography & Styled Components                       */
+    /* ------------------------------------------------------------- */
     /* Brand header */
     .brand-header {
         text-align: center;
-        padding: 1rem 0 0.5rem;
+        padding: clamp(0.5rem, 2vw, 1rem) 0 clamp(0.25rem, 1vw, 0.5rem);
+        width: 100%;
     }
     .brand-header h1 {
         color: var(--accent) !important;
-        font-size: 1.55rem !important;
-        letter-spacing: 2px;
+        font-size: clamp(1.15rem, 2.5vw + 0.5rem, 1.6rem) !important;
+        font-weight: 700 !important;
+        letter-spacing: clamp(1px, 0.2vw, 2px);
         margin-bottom: 0 !important;
+        word-break: break-word;
     }
     .brand-header p {
         color: var(--text-muted);
-        font-size: 0.78rem;
-        margin-top: 2px;
+        font-size: clamp(0.72rem, 1.2vw + 0.35rem, 0.84rem);
+        margin-top: 4px;
+        font-weight: 400;
     }
 
     /* Scene estimation badge */
@@ -69,94 +248,165 @@ st.markdown(
         background: var(--bg-primary);
         border: 1px solid var(--accent);
         border-radius: 6px;
-        padding: 8px 14px;
+        padding: clamp(6px, 1.5vw, 10px) clamp(10px, 2vw, 16px);
         text-align: center;
         color: var(--accent);
         font-weight: 600;
-        font-size: 0.88rem;
+        font-size: clamp(0.78rem, 1.2vw + 0.45rem, 0.92rem);
         margin-top: 4px;
+        width: 100%;
+        box-sizing: border-box;
     }
 
     /* Pro-tips container */
     .pro-tips {
         background: var(--bg-primary);
-        border: 1px solid #1E2636;
+        border: 1px solid var(--border-color);
         border-radius: 8px;
-        padding: 14px 16px;
+        padding: clamp(10px, 2vw, 16px);
         margin-top: 12px;
+        width: 100%;
+        box-sizing: border-box;
     }
     .pro-tips h4 {
         color: var(--accent) !important;
-        font-size: 0.85rem !important;
+        font-size: clamp(0.78rem, 1.2vw + 0.45rem, 0.9rem) !important;
+        font-weight: 600 !important;
         margin-bottom: 8px !important;
     }
     .pro-tips li {
         color: var(--text-muted);
-        font-size: 0.8rem;
+        font-size: clamp(0.72rem, 1vw + 0.4rem, 0.84rem);
         margin-bottom: 4px;
+        line-height: 1.5;
     }
 
     /* Warning note */
     .warning-note {
-        background: rgba(245,166,35,0.08);
+        background: rgba(245, 166, 35, 0.08);
         border-left: 3px solid var(--accent);
-        padding: 8px 12px;
-        font-size: 0.8rem;
+        padding: clamp(6px, 1.5vw, 10px) clamp(8px, 2vw, 14px);
+        font-size: clamp(0.72rem, 1vw + 0.4rem, 0.84rem);
         color: var(--text-muted);
         border-radius: 0 6px 6px 0;
         margin-top: 6px;
+        width: 100%;
+        box-sizing: border-box;
+        line-height: 1.5;
     }
 
-    /* Empty state */
+    /* Top Navigation Header & DEPLOY button */
+    .top-deploy-nav {
+        position: fixed;
+        top: 14px;
+        right: 24px;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+    }
+
+    .deploy-btn {
+        font-family: var(--font-family) !important;
+        color: #FFFFFF !important;
+        font-size: 0.82rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 3px !important;
+        text-transform: uppercase !important;
+        cursor: pointer !important;
+        padding: 5px 12px !important;
+        border-radius: 4px !important;
+        background: transparent !important;
+        border: 1px solid rgba(255, 255, 255, 0.18) !important;
+        transition: all 0.2s ease !important;
+    }
+
+    .deploy-btn:hover {
+        border-color: var(--accent) !important;
+        color: var(--accent) !important;
+        background: rgba(245, 166, 35, 0.08) !important;
+    }
+
+    /* Centered Empty state in both height and width */
+    .empty-state-container {
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        min-height: calc(75vh - 40px) !important;
+        width: 100% !important;
+        text-align: center !important;
+        margin: 0 auto !important;
+    }
+
     .empty-state {
-        text-align: center;
-        padding: 6rem 2rem;
+        display: flex !important;
+        flex-direction: column !important;
+        align-items: center !important;
+        justify-content: center !important;
+        text-align: center !important;
+        padding: clamp(1.5rem, 4vw, 3rem) clamp(1rem, 3vw, 2rem) !important;
+        width: 100% !important;
+        max-width: 600px !important;
+        margin: 0 auto !important;
+        box-sizing: border-box !important;
     }
     .empty-state .icon {
-        font-size: 4rem;
-        margin-bottom: 1rem;
+        font-size: clamp(2.5rem, 6vw, 4rem);
+        margin-bottom: clamp(0.75rem, 2vw, 1.25rem);
     }
     .empty-state h2 {
         color: var(--accent) !important;
-        letter-spacing: 2px;
-        font-size: 1.6rem !important;
+        letter-spacing: clamp(1px, 0.3vw, 2.5px);
+        font-size: clamp(1.3rem, 2.8vw + 0.5rem, 1.95rem) !important;
+        font-weight: 800 !important;
+        line-height: 1.25 !important;
+        text-shadow: 0 0 24px rgba(245, 166, 35, 0.35), 0 0 48px rgba(245, 166, 35, 0.15);
+        word-break: break-word;
+        margin-bottom: 0.75rem !important;
     }
     .empty-state p {
         color: var(--text-muted);
-        max-width: 540px;
-        margin: 0.8rem auto 0;
-        font-size: 0.95rem;
+        max-width: 520px;
+        width: 100%;
+        margin: 0 auto;
+        font-size: clamp(0.85rem, 1.2vw + 0.45rem, 1rem);
         line-height: 1.6;
     }
 
     /* Scene card */
     .scene-card {
         background: var(--bg-secondary);
-        border: 1px solid #1E2636;
+        border: 1px solid var(--border-color);
         border-radius: 10px;
-        padding: 18px;
-        margin-bottom: 18px;
+        padding: clamp(12px, 2.5vw, 18px);
+        margin-bottom: clamp(12px, 2.5vw, 18px);
+        width: 100%;
+        box-sizing: border-box;
     }
     .scene-card-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
         margin-bottom: 12px;
+        width: 100%;
     }
     .scene-card-header h3 {
         color: var(--accent) !important;
-        font-size: 1rem !important;
+        font-size: clamp(0.92rem, 1.5vw + 0.45rem, 1.1rem) !important;
+        font-weight: 600 !important;
         margin: 0 !important;
     }
     .scene-card-header span {
         color: var(--text-muted);
-        font-size: 0.85rem;
+        font-size: clamp(0.75rem, 1vw + 0.45rem, 0.88rem);
     }
 
     /* Loading pipeline steps */
     .pipeline-step {
-        padding: 6px 0;
-        font-size: 0.9rem;
+        padding: clamp(4px, 1vw, 8px) 0;
+        font-size: clamp(0.8rem, 1.2vw + 0.45rem, 0.95rem);
     }
     .pipeline-step.done {
         color: #4CAF50;
@@ -166,6 +416,45 @@ st.markdown(
     }
     .pipeline-step.pending {
         color: var(--text-muted);
+    }
+
+    /* ------------------------------------------------------------- */
+    /* 1. Mobile Media Queries (<= 768px)                            */
+    /* ------------------------------------------------------------- */
+    @media (max-width: 768px) {
+        /* Sidebar full width when active on mobile */
+        section[data-testid="stSidebar"] {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+
+        /* Streamlit columns stack vertically on mobile */
+        div[data-testid="stHorizontalBlock"] {
+            flex-direction: column !important;
+            gap: 1rem !important;
+        }
+
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
+            width: 100% !important;
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+
+        /* Adjust scene card layout on mobile */
+        .scene-card-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        /* Full width buttons */
+        div[data-testid="stButton"] button {
+            width: 100% !important;
+        }
+
+        /* Compact padding on mobile */
+        .empty-state {
+            padding: 2.5rem 0.75rem;
+        }
     }
 
     /* Hide Streamlit branding */
@@ -216,7 +505,7 @@ with st.sidebar:
     st.markdown(
         """
         <div class="brand-header">
-            <h1>🎬 AI NEWS Generator</h1>
+            <h1>🎬 AI NEWS Video Generator</h1>
             <p>Automated News Video Pipeline</p>
         </div>
         """,
@@ -345,6 +634,24 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    # ---- GPU Status Indicator ----
+    st.divider()
+    st.markdown("##### 🖥️ GPU Engine Status")
+    if GPU_ENGINE_AVAILABLE:
+        gpu = get_gpu_info()
+        if gpu["cuda_available"]:
+            st.success(f"✅ **{gpu['device_name']}**", icon="🟢")
+            st.caption(
+                f"VRAM: {gpu['vram_used_mb']} / {gpu['vram_total_mb']} MB  \n"
+                f"Model: {gpu['model_loaded'] or 'Not loaded yet'}"
+            )
+        else:
+            st.warning("⚠️ CUDA not available — CPU mode", icon="🟡")
+            st.caption("Images will generate slowly on CPU.")
+    else:
+        st.info("📦 GPU engine not installed", icon="ℹ️")
+        st.caption("Install torch + diffusers for AI images.")
+
 # ---------------------------------------------------------------------------
 # Handle button actions
 # ---------------------------------------------------------------------------
@@ -395,7 +702,7 @@ if st.session_state.generating:
     pipeline_labels = [
         "📥 Ingesting source content…",
         "📝 Generating news script via Gemini…",
-        "🖼️ Preparing visual placeholders…",
+        "🎨 Generating AI scene images…" if GPU_ENGINE_AVAILABLE else "🖼️ Preparing visual placeholders…",
         "✅ Assembling storyboard…",
     ]
     num_steps = len(pipeline_labels)
@@ -455,19 +762,44 @@ if st.session_state.generating:
             st.session_state.last_error = f"Gemini Director error: {exc}"
             error_occurred = True
 
-    # ── Step 3: Build scene objects with placeholders ─────────────────────
+    # ── Step 3: Generate AI images (or placeholders) ────────────────────────
     if not error_occurred:
         _show_pipeline(2)
         progress_bar.progress(3 / num_steps)
 
         scenes = []
+        total_scenes = len(scenes_raw)
         for i, s in enumerate(scenes_raw):
+            visual_prompt = s.get("visual_prompt", "")
+            scene_num = s.get("scene_number", i + 1)
+            img_bytes = None
+
+            # Try AI generation if GPU engine is available
+            if GPU_ENGINE_AVAILABLE and visual_prompt:
+                try:
+                    st.toast(
+                        f"🎨 Rendering scene {scene_num}/{total_scenes}…",
+                        icon="🖼️",
+                    )
+                    ai_image = generate_scene_image(prompt=visual_prompt)
+                    if ai_image is not None:
+                        img_bytes = image_to_bytes(ai_image)
+                except Exception as exc:
+                    st.toast(
+                        f"⚠️ Scene {scene_num} AI render failed, using placeholder.",
+                        icon="⚠️",
+                    )
+
+            # Fallback to placeholder
+            if img_bytes is None:
+                img_bytes = _create_placeholder_image(scene_num)
+
             scenes.append({
-                "scene_number": s.get("scene_number", i + 1),
+                "scene_number": scene_num,
                 "timestamp": s.get("timestamp", ""),
                 "voiceover": s.get("narration", ""),
-                "visual_prompt": s.get("visual_prompt", ""),
-                "image_bytes": _create_placeholder_image(i + 1),
+                "visual_prompt": visual_prompt,
+                "image_bytes": img_bytes,
             })
 
         st.session_state.scenes = scenes
@@ -523,11 +855,29 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 else:
                     st.info("🖼️ Image placeholder (Pillow not installed)")
 
-                st.button(
-                    "🔄 Re-render Image",
-                    key=f"rerender_{scene['scene_number']}",
-                    use_container_width=True,
-                )
+                rerender_key = f"rerender_{scene['scene_number']}"
+                if GPU_ENGINE_AVAILABLE:
+                    if st.button(
+                        "🔄 Re-render Image",
+                        key=rerender_key,
+                        use_container_width=True,
+                    ):
+                        with st.spinner(f"🎨 Re-rendering scene {scene['scene_number']}…"):
+                            new_image = generate_scene_image(prompt=scene["visual_prompt"])
+                            if new_image is not None:
+                                scene["image_bytes"] = image_to_bytes(new_image)
+                                st.toast(f"✅ Scene {scene['scene_number']} re-rendered!", icon="🎨")
+                                st.rerun()
+                            else:
+                                st.toast(f"⚠️ Re-render failed for scene {scene['scene_number']}.", icon="⚠️")
+                else:
+                    st.button(
+                        "🔄 Re-render Image",
+                        key=rerender_key,
+                        use_container_width=True,
+                        disabled=True,
+                        help="Install torch + diffusers to enable AI re-rendering",
+                    )
 
             with col_details:
                 # Voiceover Script (editable)
@@ -574,13 +924,19 @@ else:
     # ---- Empty State ----
     st.markdown(
         """
-        <div class="empty-state">
-            <div class="icon">🎬</div>
-            <h2>YOUR NEWS STORYBOARD AWAITS</h2>
-            <p>
-                Enter a URL, PDF, or text on the left, pick your duration,
-                and watch your video scenes generate in real-time.
-            </p>
+        <div class="top-deploy-nav">
+            <span class="deploy-btn">DEPLOY</span>
+        </div>
+        <div class="empty-state-container">
+            <div class="empty-state">
+                <div class="icon">🎬</div>
+                <!-- YOUR NEWS STORYBOARD AWAITS -->
+                <h2>YOUR NEWS STORYBOARD<br>AWAITS</h2>
+                <p>
+                    Enter a URL, PDF, or text on the left, pick your duration, and watch<br>
+                    your video scenes generate in real-time.
+                </p>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,

@@ -1,6 +1,6 @@
 """
-Director LLM Engine — AI NEWS Generator
-==========================================
+Director LLM Engine — AI NEWS Video Generator
+==============================================
 Generates a structured news storyboard (JSON array of scenes) by calling the
 Google Gemini API with the ingested article text and target duration.
 
@@ -78,7 +78,7 @@ RULES:
 at 140 WPM).
 2. Split the story into {min_scenes} to {max_scenes} scenes.
 3. Each scene needs a concise, broadcast-quality narration and a detailed \
-visual prompt suitable for AI image generation (480p landscape, cinematic).
+visual prompt suitable for AI image generation (1080p landscape, cinematic).
 4. Timestamps must be sequential and cover the full duration.
 5. Return ONLY a valid JSON array — no markdown, no commentary.
 
@@ -88,7 +88,7 @@ OUTPUT FORMAT (JSON array):
     "scene_number": 1,
     "timestamp": "00:00 - 00:15",
     "narration": "Exact spoken narration text for this scene.",
-    "visual_prompt": "480p landscape cinematic description for image generation."
+    "visual_prompt": "1080p landscape cinematic description for image generation."
   }}
 ]
 """

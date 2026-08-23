@@ -1,5 +1,5 @@
 """
-Utility helpers for the AI NEWS Generator frontend.
+Utility helpers for the AI NEWS Video Generator frontend.
 
 Provides scene estimation, demo data generation, timestamp formatting,
 and placeholder image creation for the Streamlit UI.

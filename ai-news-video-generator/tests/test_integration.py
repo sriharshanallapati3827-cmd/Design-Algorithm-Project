@@ -190,7 +190,7 @@ class TestSpecCompliance:
         assert "art_style" not in source or "art style" not in source
 
     def test_brand_name_correct(self):
-        """FRONTEND_SPEC: title must be 'AI NEWS Generator'."""
+        """FRONTEND_SPEC: title must be 'AI NEWS Video Generator'."""
         with open("app.py", "r", encoding="utf-8") as f:
             source = f.read()
-        assert "AI NEWS Generator" in source
+        assert "AI NEWS Video Generator" in source

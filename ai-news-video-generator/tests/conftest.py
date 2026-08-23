@@ -1,5 +1,5 @@
 """
-Shared fixtures for the AI NEWS Generator test suite.
+Shared fixtures for the AI NEWS Video Generator test suite.
 """
 
 import pytest

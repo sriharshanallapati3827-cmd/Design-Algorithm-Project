@@ -1,14 +1,14 @@
-# Secret API keys
-.env
-
-# Python cache & temporary files
-__pycache__/
-*.py[cod]
-
-# Virtual environment (if applicable)
+# Virtual environment
 venv/
 .venv/
 
-# IDE / OS files
-.vscode/
-.DS_Store
+# Environment keys & secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local image outputs (if any)
+*.png
+*.jpg
