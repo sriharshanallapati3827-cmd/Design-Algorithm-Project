@@ -102,6 +102,15 @@ def main():
     except Exception as e:
         all_ok &= check("app.py spec compliance", False, str(e))
 
+    # 5. Run pytest test suite
+    try:
+        import pytest
+        print("\n--- Running Unit & Integration Tests ---")
+        exit_code = pytest.main(["-q", "--tb=short", "tests"])
+        all_ok &= check("Pytest test suite (69 tests)", exit_code == 0)
+    except Exception as e:
+        all_ok &= check("Pytest test suite", False, str(e))
+
     # Summary
     print("\n" + "=" * 50)
     if all_ok:

@@ -13,7 +13,10 @@ from utils import (
     format_timestamp,
     generate_demo_scenes,
     load_demo_article,
+    _create_placeholder_image,
 )
+from ingestion import extract_text_from_url, extract_text_from_pdf, clean_text_input
+from director import generate_storyboard, MODEL_MAP
 
 # ---------------------------------------------------------------------------
 # Page config & custom CSS
@@ -186,6 +189,23 @@ if "demo_text" not in st.session_state:
     st.session_state.demo_text = ""
 if "generation_done" not in st.session_state:
     st.session_state.generation_done = False
+# Persisted inputs — survive st.rerun() during generation
+if "input_url" not in st.session_state:
+    st.session_state.input_url = ""
+if "input_pdf" not in st.session_state:
+    st.session_state.input_pdf = None
+if "input_raw_text" not in st.session_state:
+    st.session_state.input_raw_text = ""
+if "input_duration" not in st.session_state:
+    st.session_state.input_duration = 90
+if "input_model" not in st.session_state:
+    st.session_state.input_model = "Gemini 2.5 Flash"
+if "article_text" not in st.session_state:
+    st.session_state.article_text = ""
+if "last_error" not in st.session_state:
+    st.session_state.last_error = ""
+if "saved_api_key" not in st.session_state:
+    st.session_state.saved_api_key = ""
 
 # ---------------------------------------------------------------------------
 # LEFT SIDEBAR
@@ -272,11 +292,26 @@ with st.sidebar:
     model = st.selectbox(
         "Select model",
         options=[
+            "Gemini 3.6 Flash",
+            "Gemini 3.5 Flash Lite",
             "Gemini 2.5 Flash",
             "Gemini 1.5 Flash",
             "Claude 3.5 Sonnet",
         ],
         label_visibility="collapsed",
+    )
+
+    st.divider()
+
+    # ---- API Key ----
+    st.markdown("##### 🔑 Gemini API Key")
+    sidebar_api_key = st.text_input(
+        "API Key",
+        type="password",
+        placeholder="Paste key here (overrides .env)",
+        label_visibility="collapsed",
+        help="Optional. If left blank, the key from .env / GEMINI_API_KEY env var is used.",
+        key="api_key_input",
     )
 
     st.divider()
@@ -318,20 +353,33 @@ if demo_clicked:
     st.session_state.demo_text = load_demo_article()
     st.session_state.scenes = []
     st.session_state.generation_done = False
+    st.session_state.last_error = ""
     st.rerun()
 
 if generate_clicked:
-    # Check that at least one input source has content
-    has_input = bool(url_input) or bool(pdf_file) or bool(raw_text)
-    if not has_input:
-        st.sidebar.error("Please provide a URL, PDF, or text before generating.")
-    elif pdf_file is not None and pdf_file.size > 5 * 1024 * 1024:
-        st.sidebar.error("PDF file exceeds the 5MB limit. Please upload a smaller file.")
+    # Claude toast guard
+    if model == "Claude 3.5 Sonnet":
+        st.toast("⚠️ Anthropic models are currently inactive. Please select a Gemini model.", icon="🚫")
     else:
-        st.session_state.generating = True
-        st.session_state.generation_done = False
-        st.session_state.scenes = []
-        st.rerun()
+        # Check that at least one input source has content
+        has_input = bool(url_input) or bool(pdf_file) or bool(raw_text)
+        if not has_input:
+            st.sidebar.error("Please provide a URL, PDF, or text before generating.")
+        elif pdf_file is not None and pdf_file.size > 5 * 1024 * 1024:
+            st.sidebar.error("PDF file exceeds the 5MB limit. Please upload a smaller file.")
+        else:
+            # Persist inputs into session state so they survive the rerun
+            st.session_state.input_url = url_input or ""
+            st.session_state.input_pdf = pdf_file
+            st.session_state.input_raw_text = raw_text or ""
+            st.session_state.input_duration = duration
+            st.session_state.input_model = model
+            st.session_state.saved_api_key = sidebar_api_key or ""
+            st.session_state.last_error = ""
+            st.session_state.generating = True
+            st.session_state.generation_done = False
+            st.session_state.scenes = []
+            st.rerun()
 
 # ---------------------------------------------------------------------------
 # MAIN WORKSPACE
@@ -341,42 +389,102 @@ if st.session_state.generating:
     # ---- Loading / Pipeline State ----
     st.markdown("## ⚙️ Generating Your News Storyboard…")
 
-    pipeline_steps = [
-        ("📥 Ingesting source content…", 0.8),
-        ("📝 Generating news script…", 1.2),
-        ("🎨 Creating visual prompts…", 1.0),
-        ("🖼️ Rendering AI images…", 1.5),
-        ("🔊 Synthesizing voiceover audio…", 1.0),
-        ("✅ Assembling storyboard…", 0.5),
-    ]
-
     progress_bar = st.progress(0)
-    status_container = st.container()
+    status_container = st.empty()
 
-    for idx, (step_label, delay) in enumerate(pipeline_steps):
-        with status_container:
-            lines = []
-            for j, (label, _) in enumerate(pipeline_steps):
-                if j < idx:
-                    lines.append(f'<div class="pipeline-step done">✅ {label}</div>')
-                elif j == idx:
-                    lines.append(
-                        f'<div class="pipeline-step active">⏳ {label}</div>'
-                    )
-                else:
-                    lines.append(
-                        f'<div class="pipeline-step pending">⬜ {label}</div>'
-                    )
-            status_container.markdown("".join(lines), unsafe_allow_html=True)
-        progress_bar.progress((idx + 1) / len(pipeline_steps))
-        time.sleep(delay)
+    pipeline_labels = [
+        "📥 Ingesting source content…",
+        "📝 Generating news script via Gemini…",
+        "🖼️ Preparing visual placeholders…",
+        "✅ Assembling storyboard…",
+    ]
+    num_steps = len(pipeline_labels)
 
-    # Generation complete — build scenes
-    mid_scenes = (min_sc + max_sc) // 2
-    num_scenes = max(min_sc, min(mid_scenes, max_sc))
-    st.session_state.scenes = generate_demo_scenes(num_scenes, duration)
+    def _show_pipeline(active_idx: int):
+        """Render the pipeline step indicators."""
+        lines = []
+        for j, label in enumerate(pipeline_labels):
+            if j < active_idx:
+                lines.append(f'<div class="pipeline-step done">✅ {label}</div>')
+            elif j == active_idx:
+                lines.append(f'<div class="pipeline-step active">⏳ {label}</div>')
+            else:
+                lines.append(f'<div class="pipeline-step pending">⬜ {label}</div>')
+        status_container.markdown("".join(lines), unsafe_allow_html=True)
+
+    error_occurred = False
+
+    # ── Step 1: Ingest ────────────────────────────────────────────────────
+    _show_pipeline(0)
+    progress_bar.progress(1 / num_steps)
+
+    try:
+        saved_url = st.session_state.input_url
+        saved_pdf = st.session_state.input_pdf
+        saved_raw = st.session_state.input_raw_text
+
+        if saved_url:
+            article_text = extract_text_from_url(saved_url)
+        elif saved_pdf is not None:
+            article_text = extract_text_from_pdf(saved_pdf)
+        elif saved_raw:
+            article_text = clean_text_input(saved_raw)
+        else:
+            raise ValueError("No input content found. Please provide a URL, PDF, or text.")
+
+        st.session_state.article_text = article_text
+
+    except (ValueError, Exception) as exc:
+        st.session_state.last_error = f"Ingestion error: {exc}"
+        error_occurred = True
+
+    # ── Step 2: Generate storyboard via Gemini ────────────────────────────
+    if not error_occurred:
+        _show_pipeline(1)
+        progress_bar.progress(2 / num_steps)
+
+        try:
+            api_key = st.session_state.saved_api_key if st.session_state.saved_api_key else None
+            scenes_raw = generate_storyboard(
+                article_text=st.session_state.article_text,
+                duration_sec=st.session_state.input_duration,
+                api_key=api_key,
+                model_name=st.session_state.input_model,
+            )
+        except (ValueError, RuntimeError, Exception) as exc:
+            st.session_state.last_error = f"Gemini Director error: {exc}"
+            error_occurred = True
+
+    # ── Step 3: Build scene objects with placeholders ─────────────────────
+    if not error_occurred:
+        _show_pipeline(2)
+        progress_bar.progress(3 / num_steps)
+
+        scenes = []
+        for i, s in enumerate(scenes_raw):
+            scenes.append({
+                "scene_number": s.get("scene_number", i + 1),
+                "timestamp": s.get("timestamp", ""),
+                "voiceover": s.get("narration", ""),
+                "visual_prompt": s.get("visual_prompt", ""),
+                "image_bytes": _create_placeholder_image(i + 1),
+            })
+
+        st.session_state.scenes = scenes
+
+    # ── Step 4: Done ──────────────────────────────────────────────────────
+    if not error_occurred:
+        _show_pipeline(3)
+        progress_bar.progress(1.0)
+        time.sleep(0.4)
+
     st.session_state.generating = False
-    st.session_state.generation_done = True
+
+    if error_occurred:
+        st.session_state.generation_done = False
+    else:
+        st.session_state.generation_done = True
+
     st.rerun()
 
 elif st.session_state.generation_done and st.session_state.scenes:
@@ -446,6 +554,23 @@ elif st.session_state.generation_done and st.session_state.scenes:
             st.divider()
 
 else:
+    # ---- Error State (if any) ----
+    if st.session_state.last_error:
+        st.error(f"⚠️ **Generation Failed:** {st.session_state.last_error}")
+        col_err1, col_err2 = st.columns([1, 1])
+        with col_err1:
+            if st.button("💡 Render with Demo Storyboard Instead", use_container_width=True):
+                min_s, _ = calculate_scene_range(duration)
+                st.session_state.scenes = generate_demo_scenes(min_s, duration)
+                st.session_state.generation_done = True
+                st.session_state.last_error = ""
+                st.rerun()
+        with col_err2:
+            if st.button("✕ Dismiss", use_container_width=True):
+                st.session_state.last_error = ""
+                st.rerun()
+        st.divider()
+
     # ---- Empty State ----
     st.markdown(
         """

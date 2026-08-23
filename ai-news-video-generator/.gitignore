@@ -1,0 +1,14 @@
+# Secret API keys
+.env
+
+# Python cache & temporary files
+__pycache__/
+*.py[cod]
+
+# Virtual environment (if applicable)
+venv/
+.venv/
+
+# IDE / OS files
+.vscode/
+.DS_Store
