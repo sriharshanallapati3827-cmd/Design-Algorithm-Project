@@ -90,7 +90,7 @@ def get_gpu_info() -> dict:
         return {
             "cuda_available": True,
             "device_name": props.name,
-            "vram_total_mb": props.total_mem // (1024 * 1024),
+            "vram_total_mb": props.total_memory // (1024 * 1024),
             "vram_used_mb": _torch.cuda.memory_allocated(0) // (1024 * 1024),
             "model_loaded": _pipeline_model_id,
         }

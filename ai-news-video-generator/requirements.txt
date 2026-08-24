@@ -14,6 +14,9 @@ transformers
 accelerate
 safetensors
 
+# Phase 4 — Audio TTS
+edge-tts
+
 # Testing
 pytest>=7.0.0
 pytest-mock>=3.10.0

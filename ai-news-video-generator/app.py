@@ -31,6 +31,28 @@ try:
 except ImportError:
     GPU_ENGINE_AVAILABLE = False
 
+# Phase 4 — Neural TTS audio engine (optional; falls back gracefully)
+try:
+    from audio import (
+        generate_scene_audio,
+        get_voice_options,
+        VOICES,
+        DEFAULT_VOICE,
+    )
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    DEFAULT_VOICE = "en-US-AvaNeural"
+    VOICES = {
+        "Female - Professional News Anchor": "en-US-AvaNeural",
+        "Male - Authoritative News Anchor": "en-US-AndrewNeural",
+        "Male - Standard Broadcast": "en-US-GuyNeural",
+        "Female - British News": "en-GB-SoniaNeural",
+    }
+
+    def get_voice_options():
+        return dict(VOICES)
+
 # ---------------------------------------------------------------------------
 # Page config & custom CSS
 # ---------------------------------------------------------------------------
@@ -495,6 +517,11 @@ if "last_error" not in st.session_state:
     st.session_state.last_error = ""
 if "saved_api_key" not in st.session_state:
     st.session_state.saved_api_key = ""
+# Phase 4 — Audio state
+if "audio_voice" not in st.session_state:
+    st.session_state.audio_voice = DEFAULT_VOICE
+if "scene_audio" not in st.session_state:
+    st.session_state.scene_audio = {}  # {scene_number: bytes}
 
 # ---------------------------------------------------------------------------
 # LEFT SIDEBAR
@@ -589,6 +616,40 @@ with st.sidebar:
         ],
         label_visibility="collapsed",
     )
+
+    st.divider()
+
+    # ---- G. Voiceover Voice Selector (Phase 4) ----
+    st.markdown("##### 🎙️ Voiceover Voice")
+    _voice_options = get_voice_options()
+    _voice_display_names = list(_voice_options.keys())
+    # Find default index by matching current audio_voice ID
+    _current_voice_id = st.session_state.audio_voice
+    _default_idx = next(
+        (i for i, v in enumerate(_voice_options.values()) if v == _current_voice_id),
+        0,
+    )
+    _selected_voice_name = st.selectbox(
+        "Select voiceover voice",
+        options=_voice_display_names,
+        index=_default_idx,
+        label_visibility="collapsed",
+        disabled=not TTS_AVAILABLE,
+        help="Neural news-anchor voices powered by edge-tts"
+        if TTS_AVAILABLE
+        else "Install edge-tts to enable TTS: pip install edge-tts",
+    )
+    # Persist selected voice ID
+    _selected_voice_id = _voice_options[_selected_voice_name]
+    if _selected_voice_id != st.session_state.audio_voice:
+        st.session_state.audio_voice = _selected_voice_id
+        # Clear cached audio so new voice is used on next generation
+        st.session_state.scene_audio = {}
+
+    if TTS_AVAILABLE:
+        st.caption(f"🎙️ {_selected_voice_name}")
+    else:
+        st.caption("⚠️ edge-tts not installed — audio disabled")
 
     st.divider()
 
@@ -894,12 +955,81 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 st.markdown("**🎨 Visual Prompt**")
                 st.code(scene["visual_prompt"], language="text")
 
-                # Audio Preview (placeholder)
+                # Audio Preview (Phase 4)
                 st.markdown("**🔊 Audio Preview**")
-                st.info(
-                    "🎧 Audio preview will appear here after TTS generation.",
-                    icon="🔊",
-                )
+                _scene_num = scene["scene_number"]
+                _cached_audio = st.session_state.scene_audio.get(_scene_num)
+
+                if not TTS_AVAILABLE:
+                    # edge-tts not installed — show disabled state
+                    st.button(
+                        "🎙️ Generate Audio",
+                        key=f"audio_gen_{_scene_num}",
+                        disabled=True,
+                        use_container_width=True,
+                        help="Install edge-tts to enable audio: pip install edge-tts",
+                    )
+                    st.caption("⚠️ edge-tts not installed")
+                elif _cached_audio:
+                    # Audio already generated — show player + regenerate button
+                    st.audio(_cached_audio, format="audio/mp3")
+                    _regen_col, _voice_col = st.columns([1, 1])
+                    with _regen_col:
+                        if st.button(
+                            "🔄 Regenerate",
+                            key=f"audio_regen_{_scene_num}",
+                            use_container_width=True,
+                        ):
+                            # Read live voiceover text (may have been edited)
+                            _live_text = st.session_state.get(
+                                f"vo_{_scene_num}", scene["voiceover"]
+                            )
+                            with st.spinner("🎙️ Regenerating audio…"):
+                                try:
+                                    _new_audio = generate_scene_audio(
+                                        text=_live_text,
+                                        voice=st.session_state.audio_voice,
+                                    )
+                                    st.session_state.scene_audio[_scene_num] = _new_audio
+                                    st.toast(
+                                        f"✅ Scene {_scene_num} audio updated!",
+                                        icon="🎙️",
+                                    )
+                                    st.rerun()
+                                except Exception as _exc:
+                                    st.error(f"TTS error: {_exc}")
+                    with _voice_col:
+                        # Show active voice label
+                        _vname = next(
+                            (k for k, v in VOICES.items()
+                             if v == st.session_state.audio_voice),
+                            st.session_state.audio_voice,
+                        )
+                        st.caption(f"🎙️ {_vname}")
+                else:
+                    # No audio yet — show Generate button
+                    if st.button(
+                        "🎙️ Generate Audio",
+                        key=f"audio_gen_{_scene_num}",
+                        use_container_width=True,
+                    ):
+                        _live_text = st.session_state.get(
+                            f"vo_{_scene_num}", scene["voiceover"]
+                        )
+                        with st.spinner("🎙️ Synthesising voiceover…"):
+                            try:
+                                _audio_bytes = generate_scene_audio(
+                                    text=_live_text,
+                                    voice=st.session_state.audio_voice,
+                                )
+                                st.session_state.scene_audio[_scene_num] = _audio_bytes
+                                st.toast(
+                                    f"✅ Scene {_scene_num} audio ready!",
+                                    icon="🎙️",
+                                )
+                                st.rerun()
+                            except Exception as _exc:
+                                st.error(f"TTS error: {_exc}")
 
             st.divider()
 
