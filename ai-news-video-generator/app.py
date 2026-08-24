@@ -53,6 +53,19 @@ except ImportError:
     def get_voice_options():
         return dict(VOICES)
 
+# Phase 5 — Video rendering engine (optional; falls back gracefully)
+try:
+    from video_engine import (
+        assemble_full_video,
+        is_available as _video_engine_available,
+    )
+    VIDEO_ENGINE_AVAILABLE = _video_engine_available()
+except ImportError:
+    VIDEO_ENGINE_AVAILABLE = False
+
+    def assemble_full_video(*_a, **_kw):  # type: ignore[misc]
+        raise ImportError("moviepy is not installed. Run: pip install moviepy imageio-ffmpeg")
+
 # ---------------------------------------------------------------------------
 # Page config & custom CSS
 # ---------------------------------------------------------------------------
@@ -522,6 +535,11 @@ if "audio_voice" not in st.session_state:
     st.session_state.audio_voice = DEFAULT_VOICE
 if "scene_audio" not in st.session_state:
     st.session_state.scene_audio = {}  # {scene_number: bytes}
+# Phase 5 — Video state
+if "video_bytes" not in st.session_state:
+    st.session_state.video_bytes = None   # bytes of the rendered MP4
+if "video_render_error" not in st.session_state:
+    st.session_state.video_render_error = ""
 
 # ---------------------------------------------------------------------------
 # LEFT SIDEBAR
@@ -722,6 +740,9 @@ if demo_clicked:
     st.session_state.scenes = []
     st.session_state.generation_done = False
     st.session_state.last_error = ""
+    st.session_state.scene_audio = {}
+    st.session_state.video_bytes = None
+    st.session_state.video_render_error = ""
     st.rerun()
 
 if generate_clicked:
@@ -747,6 +768,9 @@ if generate_clicked:
             st.session_state.generating = True
             st.session_state.generation_done = False
             st.session_state.scenes = []
+            st.session_state.scene_audio = {}
+            st.session_state.video_bytes = None
+            st.session_state.video_render_error = ""
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -887,6 +911,121 @@ elif st.session_state.generation_done and st.session_state.scenes:
         f"{len(st.session_state.scenes)} scenes · "
         f"{duration} seconds · Model: {model}"
     )
+    st.divider()
+
+    # ── Phase 5: Render Video Panel ────────────────────────────────────────
+    _total_scenes = len(st.session_state.scenes)
+    _scenes_with_audio = [
+        s["scene_number"]
+        for s in st.session_state.scenes
+        if st.session_state.scene_audio.get(s["scene_number"])
+    ]
+    _scenes_missing_audio = [
+        s["scene_number"]
+        for s in st.session_state.scenes
+        if s["scene_number"] not in _scenes_with_audio
+    ]
+
+    with st.container():
+        st.markdown("### 🎬 Render Full News Video")
+
+        # Audio coverage info
+        if _scenes_missing_audio:
+            st.warning(
+                f"⚠️ **{len(_scenes_missing_audio)} of {_total_scenes} scenes** have no audio yet "
+                f"(scenes {', '.join(str(n) for n in _scenes_missing_audio)}). "
+                "Scenes without audio will use a 5-second silent placeholder. "
+                "Generate audio below to include voiceovers.",
+                icon="🔇",
+            )
+        else:
+            st.success(
+                f"✅ All {_total_scenes} scenes have audio — ready to render!",
+                icon="🎙️",
+            )
+
+        # Previously rendered video — show player + download before re-render option
+        if st.session_state.video_bytes:
+            st.markdown("**🎞️ Rendered Video Preview**")
+            st.video(st.session_state.video_bytes)
+            _dl_col, _re_col = st.columns([2, 1])
+            with _dl_col:
+                st.download_button(
+                    label="⬇️ Download MP4",
+                    data=st.session_state.video_bytes,
+                    file_name="news_video.mp4",
+                    mime="video/mp4",
+                    use_container_width=True,
+                    type="primary",
+                )
+            with _re_col:
+                _rerender_video = st.button(
+                    "🔄 Re-render Video",
+                    use_container_width=True,
+                    disabled=not VIDEO_ENGINE_AVAILABLE,
+                    help="Re-render with latest images, audio, and voiceover edits."
+                    if VIDEO_ENGINE_AVAILABLE
+                    else "Install moviepy to enable video rendering: pip install moviepy imageio-ffmpeg",
+                )
+        else:
+            _rerender_video = False
+            _render_video = st.button(
+                "🎬  RENDER MP4 VIDEO",
+                use_container_width=True,
+                type="primary",
+                disabled=not VIDEO_ENGINE_AVAILABLE,
+                help="Assemble all scenes into a news video."
+                if VIDEO_ENGINE_AVAILABLE
+                else "Install moviepy to enable video rendering: pip install moviepy imageio-ffmpeg",
+            )
+
+        if st.session_state.video_render_error:
+            st.error(f"⚠️ Render failed: {st.session_state.video_render_error}")
+
+        # ── Trigger render ────────────────────────────────────────────────
+        _do_render = (
+            (not st.session_state.video_bytes and _render_video)
+            if not st.session_state.video_bytes
+            else _rerender_video
+        )
+
+        if _do_render and VIDEO_ENGINE_AVAILABLE:
+            _render_progress = st.progress(0.0, text="Starting render…")
+            _render_status = st.empty()
+            st.session_state.video_render_error = ""
+
+            import tempfile as _tempfile
+            import os as _os
+            import importlib
+            import video_engine as _ve
+            importlib.reload(_ve)
+
+            def _render_progress_cb(frac: float, label: str) -> None:
+                _render_progress.progress(min(frac, 1.0), text=label)
+                _render_status.caption(label)
+
+            _out_path = _os.path.join(
+                _tempfile.gettempdir(), "ai_news_output.mp4"
+            )
+            try:
+                _ve.assemble_full_video(
+                    scenes=st.session_state.scenes,
+                    scene_audio=st.session_state.scene_audio,
+                    output_path=_out_path,
+                    progress_callback=_render_progress_cb,
+                )
+                with open(_out_path, "rb") as _f:
+                    st.session_state.video_bytes = _f.read()
+                try:
+                    _os.unlink(_out_path)
+                except OSError:
+                    pass
+                st.toast("✅ Video rendered!", icon="🎬")
+                st.rerun()
+            except Exception as _exc:
+                st.session_state.video_render_error = str(_exc)
+                st.error(f"⚠️ Render failed: {_exc}")
+
     st.divider()
 
     for scene in st.session_state.scenes:

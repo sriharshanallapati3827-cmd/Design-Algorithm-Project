@@ -136,46 +136,83 @@ def generate_demo_scenes(num_scenes: int, duration_sec: int) -> List[Dict]:
 # ---------------------------------------------------------------------------
 
 def _create_placeholder_image(scene_number: int) -> bytes | None:
-    """Generate a simple 768×432 dark placeholder PNG with the scene number."""
+    """Generate a sharp 1024×576 news placeholder image with scene badge and styling."""
     if Image is None:
         return None
 
-    width, height = 768, 432
-    bg_color = (18, 24, 36)        # #121824
+    width, height = 1024, 576
+    bg_color = (22, 31, 48)        # #161F30
     accent_color = (245, 166, 35)  # #F5A623
 
     img = Image.new("RGB", (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    # Draw a border
+    # Gradient-like background bands
+    for i in range(height):
+        ratio = i / height
+        r = int(18 * (1 - ratio) + 26 * ratio)
+        g = int(24 * (1 - ratio) + 38 * ratio)
+        b = int(40 * (1 - ratio) + 60 * ratio)
+        draw.line([(0, i), (width, i)], fill=(r, g, b))
+
+    # Outer border
     draw.rectangle(
-        [2, 2, width - 3, height - 3],
+        [16, 16, width - 17, height - 17],
+        outline=accent_color,
+        width=3,
+    )
+
+    # Top news banner header
+    draw.rectangle([16, 16, width - 17, 70], fill=(14, 20, 32))
+    draw.line([(16, 70), (width - 17, 70)], fill=accent_color, width=2)
+
+    # Fonts
+    header_font = None
+    label_font = None
+    for fname in ("arial.ttf", "segoeui.ttf", "calibri.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            if header_font is None:
+                header_font = ImageFont.truetype(fname, 22)
+            if label_font is None:
+                label_font = ImageFont.truetype(fname, 52)
+        except (OSError, IOError):
+            continue
+    if header_font is None:
+        header_font = ImageFont.load_default()
+    if label_font is None:
+        label_font = ImageFont.load_default()
+
+    # Draw header title
+    draw.text((36, 30), "AI NEWS BROADCAST", fill=(240, 244, 248), font=header_font)
+    draw.text((width - 180, 30), "1080p HD", fill=accent_color, font=header_font)
+
+    # Scene center badge
+    badge_w, badge_h = 360, 110
+    badge_x = (width - badge_w) // 2
+    badge_y = (height - badge_h) // 2 - 30
+    draw.rectangle(
+        [badge_x, badge_y, badge_x + badge_w, badge_y + badge_h],
+        fill=(14, 20, 32),
         outline=accent_color,
         width=2,
     )
 
-    # Scene label — use default font (always available)
     label = f"SCENE {scene_number}"
-    try:
-        font = ImageFont.truetype("arial.ttf", 36)
-    except (OSError, IOError):
-        font = ImageFont.load_default()
-
-    bbox = draw.textbbox((0, 0), label, font=font)
+    bbox = draw.textbbox((0, 0), label, font=label_font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     draw.text(
-        ((width - text_w) / 2, (height - text_h) / 2),
+        (badge_x + (badge_w - text_w) // 2, badge_y + (badge_h - text_h) // 2 - 4),
         label,
         fill=accent_color,
-        font=font,
+        font=label_font,
     )
 
-    # Filmstrip-style decoration (top & bottom bars)
-    for y in (0, height - 8):
-        draw.rectangle([0, y, width, y + 8], fill=(30, 36, 50))
-        for x in range(0, width, 40):
-            draw.rectangle([x + 4, y + 1, x + 20, y + 7], fill=(50, 58, 78))
+    # Filmstrip decoration along top and bottom
+    for y in (0, height - 12):
+        draw.rectangle([0, y, width, y + 12], fill=(10, 14, 22))
+        for x in range(0, width, 48):
+            draw.rectangle([x + 6, y + 2, x + 24, y + 10], fill=(60, 75, 100))
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")

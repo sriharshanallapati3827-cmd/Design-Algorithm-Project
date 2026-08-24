@@ -17,6 +17,10 @@ safetensors
 # Phase 4 — Audio TTS
 edge-tts
 
+# Phase 5 — Video Assembly Engine
+moviepy
+imageio-ffmpeg
+
 # Testing
 pytest>=7.0.0
 pytest-mock>=3.10.0
