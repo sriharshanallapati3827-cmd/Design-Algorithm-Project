@@ -42,12 +42,11 @@ try:
     TTS_AVAILABLE = True
 except ImportError:
     TTS_AVAILABLE = False
-    DEFAULT_VOICE = "en-US-AvaNeural"
+    DEFAULT_VOICE = "en-IN-NeerjaNeural"
     VOICES = {
-        "Female - Professional News Anchor": "en-US-AvaNeural",
-        "Male - Authoritative News Anchor": "en-US-AndrewNeural",
-        "Male - Standard Broadcast": "en-US-GuyNeural",
-        "Female - British News": "en-GB-SoniaNeural",
+        "Female – Indian News Anchor (Neerja)": "en-IN-NeerjaNeural",
+        "Female – Expressive Indian Anchor (Neerja Expressive)": "en-IN-NeerjaExpressiveNeural",
+        "Male – Indian News Anchor (Prabhat)": "en-IN-PrabhatNeural",
     }
 
     def get_voice_options():
@@ -671,19 +670,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- API Key ----
-    st.markdown("##### 🔑 Gemini API Key")
-    sidebar_api_key = st.text_input(
-        "API Key",
-        type="password",
-        placeholder="Paste key here (overrides .env)",
-        label_visibility="collapsed",
-        help="Optional. If left blank, the key from .env / GEMINI_API_KEY env var is used.",
-        key="api_key_input",
-    )
-
-    st.divider()
-
     # ---- F. Action Buttons ----
     generate_clicked = st.button(
         "🎬  GENERATE AI NEWS STORYBOARD",
@@ -694,23 +680,6 @@ with st.sidebar:
     demo_clicked = st.button(
         "📰  LOAD DEMO NEWS ARTICLE",
         use_container_width=True,
-    )
-
-    # ---- Pro Tips ----
-    st.markdown(
-        """
-        <div class="pro-tips">
-            <h4>💡 PRO TIPS</h4>
-            <ul>
-                <li>Focus on key headlines for sharper scenes</li>
-                <li>Use 1080p landscape prompts for best visuals</li>
-                <li>Shorter articles (≤500 words) yield tighter scripts</li>
-                <li>Try different director models for varied styles</li>
-                <li>Edit voiceover scripts before final rendering</li>
-            </ul>
-        </div>
-        """,
-        unsafe_allow_html=True,
     )
 
     # ---- GPU Status Indicator ----
