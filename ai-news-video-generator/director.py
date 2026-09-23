@@ -171,8 +171,9 @@ Generate the storyboard JSON now.
 # Retry configuration
 # ---------------------------------------------------------------------------
 
-_MAX_RETRIES = 3        # attempts per model before moving to next
-_RETRY_BASE_DELAY = 2.0  # seconds; doubles each attempt: 2s, 4s, 8s
+_MAX_RETRIES = 5            # attempts per model before moving to next
+_RETRY_BASE_DELAY = 2.0     # seconds base; doubles each attempt: 2s, 4s, 8s…
+_CONNECT_RETRY_DELAY = 1.0  # shorter first sleep for pure network blips (DNS etc.)
 
 
 # ---------------------------------------------------------------------------
@@ -190,40 +191,61 @@ def _log(msg: str) -> None:
 
 def _is_retryable(exc: Exception) -> bool:
     """
-    Return True for transient errors that are worth retrying on the SAME model.
-    These include 503 UNAVAILABLE, rate-limits, quota, and network errors.
-    Non-retryable errors (e.g. 400 BAD_REQUEST, 401 UNAUTHORIZED, MODEL_NOT_FOUND)
-    will return False so we skip immediately to the next model / Groq.
+    Return True for transient errors worth retrying on the SAME model.
+
+    Matches on BOTH the exception message AND the exception class name,
+    because network errors like ConnectError / httpx.ConnectError carry the
+    useful text ('getaddrinfo failed', 'Errno 11001') only in the message,
+    but the word 'connection' appears in the CLASS name, not the message.
     """
     msg = str(exc).lower()
+    cls = type(exc).__name__.lower()
+    combined = f"{cls} {msg}"
+
+    # Hard errors — check first so they're never retried
+    HARD_ERRORS = (
+        "404", "not found", "model_not_found",
+        "400", "bad request", "invalid_argument",
+        "401", "403", "permission", "unauthorized",
+    )
+    if any(t in combined for t in HARD_ERRORS):
+        return False
+
     # Transient / capacity signals — retry same model
     RETRYABLE = (
+        # HTTP capacity
         "503", "unavailable", "rate limit", "rate_limit",
         "resource exhausted", "resource_exhausted",
         "quota", "overloaded", "server error", "try again",
-        "connection", "timeout", "timed out", "reset by peer",
+        # Network / DNS — matched on class name OR message
+        "connect",          # ConnectError, ConnectionError, ConnectTimeout
+        "network",          # NetworkError
+        "timeout",          # TimeoutError, ReadTimeout, ConnectTimeout
+        "timed out",
+        "reset by peer",
+        "getaddrinfo",      # [Errno 11001] getaddrinfo failed  ← DNS failure
+        "errno 11001",      # Windows DNS lookup failure
+        "errno 11004",      # Windows DNS no data
+        "name or service",  # Linux: Name or service not known
+        "temporary failure",
+        "eof",              # EOFError / premature stream close
+        "broken pipe",
+        "ssl",              # SSL handshake failures (transient)
     )
-    # Hard errors — don't retry, skip to next model immediately
-    HARD_ERRORS = (
-        "404", "not found", "model_not_found",
-        "400", "bad request", "invalid",
-        "401", "403", "permission", "unauthorized",
-    )
-    if any(t in msg for t in HARD_ERRORS):
-        return False
-    return any(t in msg for t in RETRYABLE)
+    return any(t in combined for t in RETRYABLE)
 
 
 def _is_skip_worthy(exc: Exception) -> bool:
     """
-    Return True for errors where retrying the SAME model is pointless.
-    We should skip immediately to the next model in the chain.
-    Includes: model-not-found, auth errors, bad-request, parse failures.
+    Return True for hard errors where retrying the SAME model is pointless.
+    Includes: model-not-found (404), auth errors (401/403), bad-request (400).
     """
     msg = str(exc).lower()
-    return any(t in msg for t in (
+    cls = type(exc).__name__.lower()
+    combined = f"{cls} {msg}"
+    return any(t in combined for t in (
         "404", "not found", "model_not_found",
-        "400", "bad request",
+        "400", "bad request", "invalid_argument",
         "401", "403", "permission", "unauthorized",
     ))
 
@@ -278,8 +300,18 @@ def _call_gemini_with_retry(
                 raise  # propagate to the model chain loop
 
             if _is_retryable(exc) and attempt < _MAX_RETRIES:
-                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))  # 2s, 4s
-                _log(f"[Gemini WAIT] sleeping {delay:.0f}s before retry…")
+                # Network/DNS blips resolve quickly — use short initial sleep.
+                # Capacity errors (503, rate-limit) need longer back-off.
+                _is_network_err = any(
+                    t in f"{type(exc).__name__.lower()} {str(exc).lower()}"
+                    for t in ("connect", "getaddrinfo", "errno 11", "network",
+                              "timeout", "eof", "broken pipe", "ssl")
+                )
+                if _is_network_err:
+                    delay = _CONNECT_RETRY_DELAY * (1.5 ** (attempt - 1))  # 1s, 1.5s, 2.25s…
+                else:
+                    delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))       # 2s, 4s, 8s…
+                _log(f"[Gemini WAIT] sleeping {delay:.1f}s before retry…")
                 _time.sleep(delay)
                 continue
 
@@ -332,7 +364,7 @@ def _call_groq_with_retry(
     user_prompt: str,
     system_prompt: str,
 ) -> str:
-    """Call Groq with the same exponential-backoff policy as Gemini."""
+    """Call Groq with the same smart retry policy as Gemini."""
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -341,8 +373,17 @@ def _call_groq_with_retry(
             last_exc = exc
             _log(f"[Groq ERR]    model={model_id!r}  attempt={attempt}  error={exc!r}")
             if _is_retryable(exc) and attempt < _MAX_RETRIES:
-                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))
-                _log(f"[Groq WAIT]   sleeping {delay:.0f}s before retry…")
+                _is_network_err = any(
+                    t in f"{type(exc).__name__.lower()} {str(exc).lower()}"
+                    for t in ("connect", "getaddrinfo", "errno 11", "network",
+                              "timeout", "eof", "broken pipe", "ssl")
+                )
+                delay = (
+                    _CONNECT_RETRY_DELAY * (1.5 ** (attempt - 1))
+                    if _is_network_err
+                    else _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                )
+                _log(f"[Groq WAIT]   sleeping {delay:.1f}s before retry…")
                 _time.sleep(delay)
             else:
                 raise
