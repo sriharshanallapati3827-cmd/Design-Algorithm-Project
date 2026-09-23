@@ -6,6 +6,7 @@ Main application file implementing the UI from FRONTEND_SPEC.md.
 Run with:  streamlit run app.py
 """
 
+import os
 import time
 import io
 import streamlit as st
@@ -527,8 +528,6 @@ if "article_text" not in st.session_state:
     st.session_state.article_text = ""
 if "last_error" not in st.session_state:
     st.session_state.last_error = ""
-if "saved_api_key" not in st.session_state:
-    st.session_state.saved_api_key = ""
 # Phase 4 — Audio state
 if "audio_voice" not in st.session_state:
     st.session_state.audio_voice = DEFAULT_VOICE
@@ -732,7 +731,6 @@ if generate_clicked:
             st.session_state.input_raw_text = raw_text or ""
             st.session_state.input_duration = duration
             st.session_state.input_model = model
-            st.session_state.saved_api_key = sidebar_api_key or ""
             st.session_state.last_error = ""
             st.session_state.generating = True
             st.session_state.generation_done = False
@@ -805,7 +803,7 @@ if st.session_state.generating:
         progress_bar.progress(2 / num_steps)
 
         try:
-            api_key = st.session_state.saved_api_key if st.session_state.saved_api_key else None
+            api_key = os.getenv("GEMINI_API_KEY")
             scenes_raw = generate_storyboard(
                 article_text=st.session_state.article_text,
                 duration_sec=st.session_state.input_duration,
