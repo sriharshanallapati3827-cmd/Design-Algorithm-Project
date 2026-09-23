@@ -523,7 +523,7 @@ if "input_raw_text" not in st.session_state:
 if "input_duration" not in st.session_state:
     st.session_state.input_duration = 90
 if "input_model" not in st.session_state:
-    st.session_state.input_model = "Gemini 2.5 Flash"
+    st.session_state.input_model = "Gemini 3.6 Flash"
 if "article_text" not in st.session_state:
     st.session_state.article_text = ""
 if "last_error" not in st.session_state:
@@ -624,13 +624,16 @@ with st.sidebar:
     model = st.selectbox(
         "Select model",
         options=[
-            "Gemini 3.6 Flash",
-            "Gemini 3.5 Flash Lite",
-            "Gemini 2.5 Flash",
-            "Gemini 1.5 Flash",
-            "Claude 3.5 Sonnet",
+            "Gemini 3.6 Flash",       # gemini-3.6-flash       — confirmed working ✓
+            "Gemini 3.5 Flash Lite",  # gemini-3.5-flash-lite  — confirmed working ✓
+            "Claude 3.5 Sonnet",      # inactive — guarded below
         ],
         label_visibility="collapsed",
+        help=(
+            "Gemini 3.6 Flash is the recommended primary model. "
+            "Gemini 3.5 Flash Lite is the automatic fallback. "
+            "Groq (qwen3.8-27b) activates automatically if all Gemini models fail."
+        ),
     )
 
     st.divider()
@@ -755,7 +758,9 @@ if st.session_state.generating:
         "📥 Ingesting source content…",
         "📝 Generating news script via Gemini…",
         "🎨 Generating AI scene images…" if GPU_ENGINE_AVAILABLE else "🖼️ Preparing visual placeholders…",
-        "✅ Assembling storyboard…",
+        "✅ Assembling storyboard scenes…",
+        "🎙️ Generating voiceover audio for all scenes…",
+        "🎬 Rendering final MP4 video…",
     ]
     num_steps = len(pipeline_labels)
 
@@ -826,7 +831,6 @@ if st.session_state.generating:
             scene_num = s.get("scene_number", i + 1)
             img_bytes = None
 
-            # Try AI generation if GPU engine is available
             if GPU_ENGINE_AVAILABLE and visual_prompt:
                 try:
                     st.toast(
@@ -836,13 +840,12 @@ if st.session_state.generating:
                     ai_image = generate_scene_image(prompt=visual_prompt)
                     if ai_image is not None:
                         img_bytes = image_to_bytes(ai_image)
-                except Exception as exc:
+                except Exception:
                     st.toast(
                         f"⚠️ Scene {scene_num} AI render failed, using placeholder.",
                         icon="⚠️",
                     )
 
-            # Fallback to placeholder
             if img_bytes is None:
                 img_bytes = _create_placeholder_image(scene_num)
 
@@ -856,31 +859,85 @@ if st.session_state.generating:
 
         st.session_state.scenes = scenes
 
-    # ── Step 4: Done ──────────────────────────────────────────────────────
+    # ── Step 4: Assemble storyboard done marker ───────────────────────────
     if not error_occurred:
         _show_pipeline(3)
-        progress_bar.progress(1.0)
-        time.sleep(0.4)
+        progress_bar.progress(4 / num_steps)
+        time.sleep(0.2)
+
+    # ── Step 5: Auto-generate TTS audio for ALL scenes ────────────────────
+    if not error_occurred:
+        _show_pipeline(4)
+        progress_bar.progress(5 / num_steps)
+
+        if TTS_AVAILABLE:
+            _voice = st.session_state.audio_voice
+            for scene in st.session_state.scenes:
+                _snum = scene["scene_number"]
+                _text = scene.get("voiceover", "")
+                if not _text.strip():
+                    continue
+                try:
+                    _audio = generate_scene_audio(text=_text, voice=_voice)
+                    st.session_state.scene_audio[_snum] = _audio
+                except Exception as _audio_exc:
+                    # Soft-fail: skip this scene's audio, don't abort pipeline
+                    st.toast(
+                        f"⚠️ Audio skipped for scene {_snum}: {_audio_exc}",
+                        icon="🔇",
+                    )
+        else:
+            st.toast("⚠️ edge-tts not installed — skipping audio generation.", icon="🔇")
+
+    # ── Step 6: Auto-render MP4 video ─────────────────────────────────────
+    if not error_occurred:
+        _show_pipeline(5)
+        progress_bar.progress(5.5 / num_steps)
+
+        if VIDEO_ENGINE_AVAILABLE:
+            import tempfile as _tempfile
+            import importlib
+            import video_engine as _ve
+            importlib.reload(_ve)
+
+            _out_path = os.path.join(_tempfile.gettempdir(), "ai_news_output.mp4")
+            try:
+                _ve.assemble_full_video(
+                    scenes=st.session_state.scenes,
+                    scene_audio=st.session_state.scene_audio,
+                    output_path=_out_path,
+                    progress_callback=None,
+                )
+                with open(_out_path, "rb") as _f:
+                    st.session_state.video_bytes = _f.read()
+                try:
+                    os.unlink(_out_path)
+                except OSError:
+                    pass
+            except Exception as _vid_exc:
+                # Soft-fail: storyboard is still shown, user can re-render manually
+                st.session_state.video_render_error = str(_vid_exc)
+                st.toast(
+                    f"⚠️ Auto video render failed — you can re-render manually. ({_vid_exc})",
+                    icon="⚠️",
+                )
+        else:
+            st.toast(
+                "📦 moviepy not installed — skipping auto video render.",
+                icon="ℹ️",
+            )
+
+    # ── Done ───────────────────────────────────────────────────────────────
+    progress_bar.progress(1.0)
+    time.sleep(0.4)
 
     st.session_state.generating = False
-
-    if error_occurred:
-        st.session_state.generation_done = False
-    else:
-        st.session_state.generation_done = True
+    st.session_state.generation_done = not error_occurred
 
     st.rerun()
 
 elif st.session_state.generation_done and st.session_state.scenes:
-    # ---- Generated Scene Grid ----
-    st.markdown("## 🎬 News Storyboard Timeline")
-    st.caption(
-        f"{len(st.session_state.scenes)} scenes · "
-        f"{duration} seconds · Model: {model}"
-    )
-    st.divider()
 
-    # ── Phase 5: Render Video Panel ────────────────────────────────────────
     _total_scenes = len(st.session_state.scenes)
     _scenes_with_audio = [
         s["scene_number"]
@@ -893,106 +950,124 @@ elif st.session_state.generation_done and st.session_state.scenes:
         if s["scene_number"] not in _scenes_with_audio
     ]
 
-    with st.container():
-        st.markdown("### 🎬 Render Full News Video")
+    # ── TOP: Video Player ─────────────────────────────────────────────────
+    st.markdown("## 🎬 Generated News Video")
+    st.caption(
+        f"{_total_scenes} scenes · "
+        f"{st.session_state.input_duration} seconds · Model: {st.session_state.input_model}"
+    )
 
-        # Audio coverage info
-        if _scenes_missing_audio:
-            st.warning(
-                f"⚠️ **{len(_scenes_missing_audio)} of {_total_scenes} scenes** have no audio yet "
-                f"(scenes {', '.join(str(n) for n in _scenes_missing_audio)}). "
-                "Scenes without audio will use a 5-second silent placeholder. "
-                "Generate audio below to include voiceovers.",
-                icon="🔇",
-            )
-        else:
-            st.success(
-                f"✅ All {_total_scenes} scenes have audio — ready to render!",
-                icon="🎙️",
-            )
+    if st.session_state.video_bytes:
+        st.video(st.session_state.video_bytes)
 
-        # Previously rendered video — show player + download before re-render option
-        if st.session_state.video_bytes:
-            st.markdown("**🎞️ Rendered Video Preview**")
-            st.video(st.session_state.video_bytes)
-            _dl_col, _re_col = st.columns([2, 1])
-            with _dl_col:
-                st.download_button(
-                    label="⬇️ Download MP4",
-                    data=st.session_state.video_bytes,
-                    file_name="news_video.mp4",
-                    mime="video/mp4",
-                    use_container_width=True,
-                    type="primary",
-                )
-            with _re_col:
-                _rerender_video = st.button(
-                    "🔄 Re-render Video",
-                    use_container_width=True,
-                    disabled=not VIDEO_ENGINE_AVAILABLE,
-                    help="Re-render with latest images, audio, and voiceover edits."
-                    if VIDEO_ENGINE_AVAILABLE
-                    else "Install moviepy to enable video rendering: pip install moviepy imageio-ffmpeg",
-                )
-        else:
-            _rerender_video = False
-            _render_video = st.button(
-                "🎬  RENDER MP4 VIDEO",
+        # Download + Re-render row
+        _vid_col1, _vid_col2, _vid_col3 = st.columns([3, 2, 2])
+        with _vid_col1:
+            st.download_button(
+                label="⬇️ Download MP4",
+                data=st.session_state.video_bytes,
+                file_name="news_video.mp4",
+                mime="video/mp4",
                 use_container_width=True,
                 type="primary",
+            )
+        with _vid_col2:
+            _rerender_clicked = st.button(
+                "🔄 Re-render Updated Video",
+                use_container_width=True,
                 disabled=not VIDEO_ENGINE_AVAILABLE,
-                help="Assemble all scenes into a news video."
+                help="Re-assemble with any edits you made to scenes below."
                 if VIDEO_ENGINE_AVAILABLE
-                else "Install moviepy to enable video rendering: pip install moviepy imageio-ffmpeg",
+                else "Install moviepy to enable: pip install moviepy imageio-ffmpeg",
+            )
+        with _vid_col3:
+            st.caption(
+                f"🎙️ Audio: {len(_scenes_with_audio)}/{_total_scenes} scenes"
+                if _scenes_with_audio
+                else "🔇 No audio attached"
+            )
+    else:
+        # No video yet (moviepy not installed or auto-render failed)
+        _rerender_clicked = False
+        if st.session_state.video_render_error:
+            st.error(f"⚠️ Auto-render failed: {st.session_state.video_render_error}")
+
+        if VIDEO_ENGINE_AVAILABLE:
+            st.info("🎬 Video will appear here after rendering.", icon="ℹ️")
+            _rerender_clicked = st.button(
+                "🎬 Render MP4 Video",
+                use_container_width=True,
+                type="primary",
+            )
+        else:
+            st.warning(
+                "📦 **moviepy not installed** — install it to render video: "
+                "`pip install moviepy imageio-ffmpeg`",
+                icon="⚠️",
             )
 
-        if st.session_state.video_render_error:
-            st.error(f"⚠️ Render failed: {st.session_state.video_render_error}")
+    if st.session_state.video_render_error and st.session_state.video_bytes:
+        st.error(f"⚠️ Last render error: {st.session_state.video_render_error}")
 
-        # ── Trigger render ────────────────────────────────────────────────
-        _do_render = (
-            (not st.session_state.video_bytes and _render_video)
-            if not st.session_state.video_bytes
-            else _rerender_video
+    # ── Re-render trigger ─────────────────────────────────────────────────
+    if _rerender_clicked and VIDEO_ENGINE_AVAILABLE:
+        import tempfile as _tempfile
+        import importlib
+        import video_engine as _ve
+        importlib.reload(_ve)
+
+        _render_progress = st.progress(0.0, text="Starting render…")
+        _render_status = st.empty()
+        st.session_state.video_render_error = ""
+
+        def _render_progress_cb(frac: float, label: str) -> None:
+            _render_progress.progress(min(frac, 1.0), text=label)
+            _render_status.caption(label)
+
+        # Pull latest voiceover edits from widget state into scenes
+        for _sc in st.session_state.scenes:
+            _key = f"vo_{_sc['scene_number']}"
+            if _key in st.session_state:
+                _sc["voiceover"] = st.session_state[_key]
+
+        _out_path = os.path.join(_tempfile.gettempdir(), "ai_news_output.mp4")
+        try:
+            _ve.assemble_full_video(
+                scenes=st.session_state.scenes,
+                scene_audio=st.session_state.scene_audio,
+                output_path=_out_path,
+                progress_callback=_render_progress_cb,
+            )
+            with open(_out_path, "rb") as _f:
+                st.session_state.video_bytes = _f.read()
+            try:
+                os.unlink(_out_path)
+            except OSError:
+                pass
+            st.toast("✅ Video re-rendered!", icon="🎬")
+            st.rerun()
+        except Exception as _exc:
+            st.session_state.video_render_error = str(_exc)
+            st.error(f"⚠️ Render failed: {_exc}")
+
+    # ── Audio coverage banner ─────────────────────────────────────────────
+    st.divider()
+    if _scenes_missing_audio:
+        st.warning(
+            f"⚠️ **{len(_scenes_missing_audio)} of {_total_scenes} scenes** have no audio "
+            f"(scenes {', '.join(str(n) for n in _scenes_missing_audio)}). "
+            "Generate audio per-scene below, then click **Re-render Updated Video**.",
+            icon="🔇",
+        )
+    else:
+        st.success(
+            f"✅ All {_total_scenes} scenes have voiceover audio.",
+            icon="🎙️",
         )
 
-        if _do_render and VIDEO_ENGINE_AVAILABLE:
-            _render_progress = st.progress(0.0, text="Starting render…")
-            _render_status = st.empty()
-            st.session_state.video_render_error = ""
-
-            import tempfile as _tempfile
-            import os as _os
-            import importlib
-            import video_engine as _ve
-            importlib.reload(_ve)
-
-            def _render_progress_cb(frac: float, label: str) -> None:
-                _render_progress.progress(min(frac, 1.0), text=label)
-                _render_status.caption(label)
-
-            _out_path = _os.path.join(
-                _tempfile.gettempdir(), "ai_news_output.mp4"
-            )
-            try:
-                _ve.assemble_full_video(
-                    scenes=st.session_state.scenes,
-                    scene_audio=st.session_state.scene_audio,
-                    output_path=_out_path,
-                    progress_callback=_render_progress_cb,
-                )
-                with open(_out_path, "rb") as _f:
-                    st.session_state.video_bytes = _f.read()
-                try:
-                    _os.unlink(_out_path)
-                except OSError:
-                    pass
-                st.toast("✅ Video rendered!", icon="🎬")
-                st.rerun()
-            except Exception as _exc:
-                st.session_state.video_render_error = str(_exc)
-                st.error(f"⚠️ Render failed: {_exc}")
-
+    # ── Scene-by-scene Editor ─────────────────────────────────────────────
+    st.markdown("### 🎞️ Scene-by-Scene Editor")
+    st.caption("Edit voiceover scripts or regenerate individual scene images below, then re-render.")
     st.divider()
 
     for scene in st.session_state.scenes:

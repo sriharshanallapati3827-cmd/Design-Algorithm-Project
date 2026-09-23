@@ -1,4 +1,4 @@
-﻿"""
+"""
 audio.py — Phase 4 Neural TTS Engine
 ======================================
 Generates MP3 voiceover audio for storyboard scenes using Microsoft's
@@ -30,14 +30,13 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 
 VOICES: dict[str, str] = {
-    "Female - Professional News Anchor": "en-US-AvaNeural",
-    "Male - Authoritative News Anchor": "en-US-AndrewNeural",
-    "Male - Standard Broadcast": "en-US-GuyNeural",
-    "Female - British News": "en-GB-SoniaNeural",
+    "Female – Indian News Anchor (Neerja)": "en-IN-NeerjaNeural",
+    "Female – Expressive Indian Anchor (Neerja Expressive)": "en-IN-NeerjaExpressiveNeural",
+    "Male – Indian News Anchor (Prabhat)": "en-IN-PrabhatNeural",
 }
 
 # Default voice
-DEFAULT_VOICE = "en-US-AvaNeural"
+DEFAULT_VOICE = "en-IN-NeerjaNeural"
 
 # ---------------------------------------------------------------------------
 # edge-tts availability guard
