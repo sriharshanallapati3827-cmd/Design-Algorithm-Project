@@ -11,6 +11,7 @@ Public API:
 import json
 import re
 import os
+import time as _time
 
 from google import genai
 from dotenv import load_dotenv
@@ -107,6 +108,63 @@ PRODUCTION PARAMETERS:
 Generate the storyboard JSON now.
 """
 
+# ---------------------------------------------------------------------------
+# Retry / fallback helpers
+# ---------------------------------------------------------------------------
+
+# Models tried in order when the primary model keeps failing.
+# The two entries are concrete Gemini model IDs (not display names).
+_FALLBACK_MODELS: list[str] = ["gemini-2.0-flash", "gemini-1.5-flash"]
+
+_MAX_RETRIES = 3          # attempts per model before moving to the next
+_RETRY_BASE_DELAY = 3.0   # seconds; doubles on each attempt (exponential backoff)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Return True for 503 / rate-limit / transient errors worth retrying."""
+    msg = str(exc).lower()
+    return any(
+        token in msg
+        for token in ("503", "unavailable", "rate limit", "resource exhausted",
+                      "quota", "overloaded", "server error", "try again")
+    )
+
+
+def _call_gemini_with_retry(
+    client: "genai.Client",
+    model_id: str,
+    user_prompt: str,
+    system_prompt: str,
+) -> str:
+    """
+    Call Gemini with exponential-backoff retries.
+
+    Returns the raw response text.
+    Raises the last exception if all retries are exhausted.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            response = client.models.generate_content(
+                model=model_id,
+                contents=user_prompt,
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                ),
+            )
+            return response.text
+        except Exception as exc:
+            last_exc = exc
+            if _is_retryable(exc) and attempt < _MAX_RETRIES:
+                delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))  # 3s, 6s, 12s
+                _time.sleep(delay)
+            else:
+                # Non-retryable error or final attempt — propagate immediately
+                raise
+    # Should never reach here, but satisfy type checker
+    raise last_exc  # type: ignore[misc]
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -143,17 +201,17 @@ def generate_storyboard(
     ValueError
         If no API key is available or the model name is unsupported.
     RuntimeError
-        If the Gemini response cannot be parsed as valid JSON.
+        If the Gemini response cannot be parsed as valid JSON after all
+        retries and fallback models are exhausted.
     """
     # --- Resolve API key ---
     key = api_key or os.getenv("GEMINI_API_KEY", "")
     if not key:
         raise ValueError(
-            "No Gemini API key provided. Set GEMINI_API_KEY in your .env file "
-            "or enter it in the sidebar."
+            "No Gemini API key provided. Set GEMINI_API_KEY in your .env file."
         )
 
-    # --- Resolve model ---
+    # --- Resolve primary model ---
     model_id = MODEL_MAP.get(model_name)
     if model_id is None:
         low = model_name.lower()
@@ -186,35 +244,46 @@ def generate_storyboard(
         max_scenes=max_scenes,
     )
 
-    # --- Call Gemini ---
+    # --- Build model chain: primary first, then fallbacks ---
+    model_chain = [model_id] + [
+        m for m in _FALLBACK_MODELS if m != model_id
+    ]
+
     client = genai.Client(api_key=key)
+    last_exc: Exception | None = None
 
-    response = client.models.generate_content(
-        model=model_id,
-        contents=user_prompt,
-        config=genai.types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=0.7,
-        ),
+    for attempt_model in model_chain:
+        try:
+            raw = _call_gemini_with_retry(
+                client, attempt_model, user_prompt, system_prompt
+            )
+            # --- Parse JSON ---
+            scenes = _parse_scenes_json(raw)
+
+            # Basic sanity checks
+            if not scenes:
+                raise RuntimeError("Gemini returned an empty scene list.")
+
+            for i, scene in enumerate(scenes):
+                for required in ("scene_number", "timestamp", "narration", "visual_prompt"):
+                    if required not in scene:
+                        raise RuntimeError(
+                            f"Scene {i+1} is missing required key '{required}'."
+                        )
+
+            return scenes
+
+        except RuntimeError:
+            # JSON / sanity errors are not transient — don't fall back
+            raise
+        except Exception as exc:
+            last_exc = exc
+            # Try the next model in the chain
+            continue
+
+    raise RuntimeError(
+        f"All Gemini models failed after retries. Last error: {last_exc}"
     )
-
-    raw = response.text
-
-    # --- Parse JSON ---
-    scenes = _parse_scenes_json(raw)
-
-    # Basic sanity checks
-    if not scenes:
-        raise RuntimeError("Gemini returned an empty scene list.")
-
-    for i, scene in enumerate(scenes):
-        for required in ("scene_number", "timestamp", "narration", "visual_prompt"):
-            if required not in scene:
-                raise RuntimeError(
-                    f"Scene {i+1} is missing required key '{required}'."
-                )
-
-    return scenes
 
 
 # ---------------------------------------------------------------------------
