@@ -1,12 +1,22 @@
 """
-Local GPU Image Engine — AI NEWS Video Generator
-=================================================
-Generates AI scene images using Stable Diffusion (SDXL-Turbo primary,
-SD 1.5 fallback) optimized for NVIDIA RTX 4050 with 6 GB VRAM.
+Image Generation Engine — AI NEWS Video Generator
+==================================================
+Dual-mode image generation with automatic GPU / cloud fallback:
+
+  LOCAL MODE  (CUDA available)
+      Uses Stable Diffusion (SDXL-Turbo primary, SD 1.5 fallback) on the
+      local NVIDIA GPU.  Optimised for RTX 4050 / 6 GB VRAM.
+
+  CLOUD MODE  (no CUDA)
+      Downloads images via the Pollinations.ai REST API:
+          GET https://image.pollinations.ai/prompt/{prompt}
+      Authentication is optional: set POLLINATIONS_API_KEY in .env for
+      higher rate-limits / private generations.
 
 Public API:
     get_pipeline()           → lazily loads the diffusion pipeline (singleton)
     generate_scene_image()   → renders a single scene from a visual prompt
+    save_scene_image()       → generate + save to output/scene_X.png
     get_gpu_info()           → returns GPU availability & model status dict
 
 VRAM Budget (RTX 4050 — 6 GB):
@@ -18,11 +28,37 @@ VRAM Budget (RTX 4050 — 6 GB):
 
 import io
 import logging
+import os
+import sys
+import urllib.parse
+from pathlib import Path
 from typing import Optional
 
+import requests
 from PIL import Image
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cloud / Pollinations configuration
+# ---------------------------------------------------------------------------
+
+# API key is optional for Pollinations — omitting it uses the public endpoint.
+POLLINATIONS_API_KEY: str | None = os.getenv("POLLINATIONS_API_KEY")
+
+# Pollinations image endpoint (prompt goes in the URL path)
+_POLLINATIONS_BASE = "https://image.pollinations.ai/prompt"
+
+# Default output directory — created automatically if absent
+_OUTPUT_DIR = Path("output")
+
+
+def _log(msg: str) -> None:
+    """Timestamped diagnostic line to stderr (visible in terminal & Streamlit)."""
+    print(f"[Generator] {msg}", file=sys.stderr, flush=True)
 
 # ---------------------------------------------------------------------------
 # Lazy imports — torch / diffusers may not be installed yet
@@ -60,18 +96,49 @@ _pipeline_model_id: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
+# CUDA availability check — single source of truth for both generation
+# logic AND the UI status panel.  Mockable in tests via:
+#   patch("generator._cuda_available", return_value=False)
+# Also respects CUDA_VISIBLE_DEVICES="-1" set in the shell before startup.
+# ---------------------------------------------------------------------------
+
+def _cuda_available() -> bool:
+    """Return True if a CUDA-capable GPU is accessible via torch.
+
+    This is the single authoritative check used by both the UI status panel
+    (``get_gpu_info``) and the generation backend selector
+    (``generate_scene_image``).  Keeping it in one place means that
+    setting ``CUDA_VISIBLE_DEVICES=-1`` in the shell — or mocking it in
+    tests — automatically affects both the sidebar display AND which
+    image-generation path is taken.
+    """
+    try:
+        _ensure_imports()
+        return bool(_torch.cuda.is_available())  # type: ignore[union-attr]
+    except ImportError:
+        return False
+
+
+# ---------------------------------------------------------------------------
 # GPU diagnostics
 # ---------------------------------------------------------------------------
 
 def get_gpu_info() -> dict:
     """Return a dict describing GPU availability and loaded model status.
 
+    Uses ``_cuda_available()`` so the sidebar reflects the same truth as
+    the image-generation backend selector.  Setting
+    ``CUDA_VISIBLE_DEVICES=-1`` before starting Streamlit will therefore
+    show "Cloud (Pollinations)" in the UI *and* route generation there.
+
     Keys:
         cuda_available (bool): Whether CUDA is available.
-        device_name (str): GPU device name or "CPU".
-        vram_total_mb (int): Total VRAM in MB (0 if CPU).
+        device_name (str): GPU device name, "Cloud (Pollinations)", or
+                           "torch not installed".
+        vram_total_mb (int): Total VRAM in MB (0 if no CUDA).
         vram_used_mb (int): Currently allocated VRAM in MB.
         model_loaded (str | None): ID of the loaded diffusion model.
+        mode (str): "local_gpu" or "cloud_pollinations".
     """
     try:
         _ensure_imports()
@@ -82,24 +149,29 @@ def get_gpu_info() -> dict:
             "vram_total_mb": 0,
             "vram_used_mb": 0,
             "model_loaded": None,
+            "mode": "cloud_pollinations",
         }
 
-    cuda = _torch.cuda.is_available()
+    # ── Use the shared wrapper — NOT _torch.cuda.is_available() directly ──
+    cuda = _cuda_available()
+
     if cuda:
-        props = _torch.cuda.get_device_properties(0)
+        props = _torch.cuda.get_device_properties(0)  # type: ignore[union-attr]
         return {
             "cuda_available": True,
             "device_name": props.name,
             "vram_total_mb": props.total_memory // (1024 * 1024),
-            "vram_used_mb": _torch.cuda.memory_allocated(0) // (1024 * 1024),
+            "vram_used_mb": _torch.cuda.memory_allocated(0) // (1024 * 1024),  # type: ignore[union-attr]
             "model_loaded": _pipeline_model_id,
+            "mode": "local_gpu",
         }
     return {
         "cuda_available": False,
-        "device_name": "CPU",
+        "device_name": "Cloud (Pollinations API)",
         "vram_total_mb": 0,
         "vram_used_mb": 0,
-        "model_loaded": _pipeline_model_id,
+        "model_loaded": None,
+        "mode": "cloud_pollinations",
     }
 
 
@@ -130,7 +202,7 @@ def get_pipeline():
     # Enable cuDNN auto-tuner for fixed input sizes
     torch.backends.cudnn.benchmark = True
 
-    cuda_available = torch.cuda.is_available()
+    cuda_available = _cuda_available()
     dtype = torch.float16 if cuda_available else torch.float32
 
     # ---- Try primary model: SDXL-Turbo ----
@@ -195,6 +267,73 @@ def get_pipeline():
 # Image generation
 # ---------------------------------------------------------------------------
 
+# _cuda_available() is defined near the top of this file (before get_gpu_info)
+# so it can be used by both the UI diagnostics and the generation logic.
+
+
+# ---------------------------------------------------------------------------
+# Cloud path — Pollinations API
+# ---------------------------------------------------------------------------
+
+def _fetch_pollinations_image(
+    prompt: str,
+    width: int = DEFAULT_WIDTH,
+    height: int = DEFAULT_HEIGHT,
+    timeout: int = 60,
+) -> Optional[Image.Image]:
+    """Download a generated image from the Pollinations.ai REST API.
+
+    Parameters
+    ----------
+    prompt : str
+        Visual description for the image.
+    width, height : int
+        Requested output dimensions (Pollinations accepts these as query params).
+    timeout : int
+        HTTP request timeout in seconds.
+
+    Returns
+    -------
+    PIL.Image.Image or None
+        Downloaded image, or ``None`` on any HTTP / IO error.
+    """
+    encoded = urllib.parse.quote(prompt, safe="")
+    url = f"{_POLLINATIONS_BASE}/{encoded}"
+
+    params: dict[str, str | int] = {
+        "width": width,
+        "height": height,
+        "nologo": "true",
+        "model": "flux",
+    }
+
+    headers: dict[str, str] = {}
+    if POLLINATIONS_API_KEY:
+        headers["Authorization"] = f"Bearer {POLLINATIONS_API_KEY}"
+        _log("Pollinations: using authenticated request (API key set).")
+    else:
+        _log("Pollinations: using public endpoint (no API key set).")
+
+    _log(f"Pollinations request → {url}  params={params}")
+
+    try:
+        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+        _log(f"Pollinations OK — received {len(resp.content):,} bytes, size={img.size}")
+        return img
+    except requests.exceptions.RequestException as exc:
+        logger.error("Pollinations HTTP request failed: %s", exc)
+        return None
+    except Exception as exc:
+        logger.error("Pollinations image decode failed: %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Unified local GPU path
+# ---------------------------------------------------------------------------
+
 def generate_scene_image(
     prompt: str,
     height: int = DEFAULT_HEIGHT,
@@ -202,6 +341,14 @@ def generate_scene_image(
     num_inference_steps: int = 4,
 ) -> Optional[Image.Image]:
     """Generate a single scene image from a visual prompt.
+
+    Automatically selects the generation backend based on hardware:
+
+    * **Local GPU** — when ``torch.cuda.is_available()`` returns ``True``.
+      Uses Stable Diffusion (SDXL-Turbo → SD 1.5 fallback) on the GPU.
+    * **Cloud (Pollinations API)** — when CUDA is unavailable.
+      Downloads from ``https://image.pollinations.ai/prompt/{prompt}``.
+      Set ``POLLINATIONS_API_KEY`` in ``.env`` for authenticated access.
 
     Parameters
     ----------
@@ -212,18 +359,26 @@ def generate_scene_image(
     width : int
         Output image width in pixels (default 1024).
     num_inference_steps : int
-        Number of denoising steps (default 4 for SDXL-Turbo).
+        Number of denoising steps — only used in local GPU mode
+        (default 4 for SDXL-Turbo; auto-bumped to 20 for SD 1.5).
 
     Returns
     -------
     PIL.Image.Image or None
         The generated RGB image, or ``None`` if generation failed.
     """
+    if not _cuda_available():
+        # ── Cloud mode: Pollinations API ─────────────────────────────────
+        _log("CUDA not available → using Pollinations cloud API.")
+        return _fetch_pollinations_image(prompt, width=width, height=height)
+
+    # ── Local GPU mode: Stable Diffusion ─────────────────────────────────
+    _log("CUDA available → using local Stable Diffusion pipeline.")
     try:
         _ensure_imports()
         torch = _torch
     except ImportError:
-        logger.error("torch/diffusers not installed — cannot generate images.")
+        logger.error("torch/diffusers not installed — cannot generate images locally.")
         return None
 
     try:
@@ -265,7 +420,7 @@ def generate_scene_image(
         return image
 
     except Exception as exc:
-        logger.error("Image generation failed: %s", exc, exc_info=True)
+        logger.error("Local GPU image generation failed: %s", exc, exc_info=True)
         # Attempt VRAM cleanup even on failure
         try:
             if _torch and _torch.cuda.is_available():
@@ -273,6 +428,66 @@ def generate_scene_image(
         except Exception:
             pass
         return None
+
+
+# ---------------------------------------------------------------------------
+# save_scene_image — unified entry point that also persists to disk
+# ---------------------------------------------------------------------------
+
+def save_scene_image(
+    prompt: str,
+    scene_index: int,
+    output_dir: Optional[str] = None,
+    height: int = DEFAULT_HEIGHT,
+    width: int = DEFAULT_WIDTH,
+    num_inference_steps: int = 4,
+) -> Optional[str]:
+    """Generate a scene image and save it to ``output/scene_<N>.png``.
+
+    Both the local-GPU and cloud-API code paths converge here so that
+    MoviePy's video assembly always finds the file at the same path
+    regardless of which backend was used.
+
+    Parameters
+    ----------
+    prompt : str
+        Visual description for the scene.
+    scene_index : int
+        1-based scene number — used to build the filename
+        (``output/scene_1.png``, ``output/scene_2.png``, …).
+    output_dir : str or None
+        Directory to write the PNG into.  Defaults to ``output/`` relative
+        to the current working directory.
+    height, width : int
+        Output dimensions.
+    num_inference_steps : int
+        Denoising steps (local GPU mode only).
+
+    Returns
+    -------
+    str or None
+        Absolute path to the saved PNG, or ``None`` if generation failed.
+    """
+    dest_dir = Path(output_dir) if output_dir else _OUTPUT_DIR
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / f"scene_{scene_index}.png"
+
+    _log(f"save_scene_image: scene={scene_index}  dest={dest_path}")
+
+    image = generate_scene_image(
+        prompt=prompt,
+        height=height,
+        width=width,
+        num_inference_steps=num_inference_steps,
+    )
+
+    if image is None:
+        logger.error("save_scene_image: generation returned None for scene %d", scene_index)
+        return None
+
+    image.save(str(dest_path), format="PNG")
+    _log(f"save_scene_image: saved {dest_path}  size={image.size}")
+    return str(dest_path.resolve())
 
 
 # ---------------------------------------------------------------------------
