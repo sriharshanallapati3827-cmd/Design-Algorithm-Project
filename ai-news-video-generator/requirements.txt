@@ -1,0 +1,26 @@
+streamlit>=1.30.0
+Pillow>=10.0.0
+google-genai
+pypdf
+beautifulsoup4
+requests
+python-dotenv
+
+# Phase 3 — Local GPU Image Engine
+torch
+torchvision
+diffusers>=0.28.0
+transformers
+accelerate
+safetensors
+
+# Phase 4 — Audio TTS
+edge-tts
+
+# Phase 5 — Video Assembly Engine
+moviepy
+imageio-ffmpeg
+
+# Testing
+pytest>=7.0.0
+pytest-mock>=3.10.0
