@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:
-    Image = None  # Graceful fallback; placeholder images will be skipped
+    Image = None
 
 
 # ---------------------------------------------------------------------------
@@ -20,14 +20,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def calculate_scene_range(duration_sec: int) -> Tuple[int, int]:
-    """Return (min_scenes, max_scenes) for a given target duration.
-
-    Heuristic:
-        - Each scene is roughly 13–20 seconds long.
-        - min_scenes = duration // 20   (longest scenes)
-        - max_scenes = duration // 13   (shortest scenes)
-    Clamps the minimum to 1 scene.
-    """
+    """Return (min_scenes, max_scenes) for a given target duration."""
     min_scenes = max(1, duration_sec // 20)
     max_scenes = max(min_scenes, duration_sec // 13)
     return min_scenes, max_scenes
@@ -35,7 +28,6 @@ def calculate_scene_range(duration_sec: int) -> Tuple[int, int]:
 
 def format_timestamp(start_sec: float, end_sec: float) -> str:
     """Format a time range as ``MM:SS – MM:SS``."""
-
     def _fmt(s: float) -> str:
         m = int(s) // 60
         sec = int(s) % 60
@@ -79,15 +71,7 @@ def load_demo_article() -> str:
 
 
 def generate_demo_scenes(num_scenes: int, duration_sec: int) -> List[Dict]:
-    """Create a list of stub scene dictionaries with placeholder content.
-
-    Each dict contains:
-        - scene_number (int)
-        - timestamp (str)           e.g. "00:00 – 00:15"
-        - voiceover (str)           narration text
-        - visual_prompt (str)       image-gen prompt
-        - image_bytes (bytes|None)  placeholder PNG
-    """
+    """Create a list of stub scene dictionaries with placeholder content."""
     scene_duration = duration_sec / num_scenes
     scenes: List[Dict] = []
 
@@ -131,23 +115,18 @@ def generate_demo_scenes(num_scenes: int, duration_sec: int) -> List[Dict]:
     return scenes
 
 
-# ---------------------------------------------------------------------------
-# Placeholder image generation
-# ---------------------------------------------------------------------------
-
 def _create_placeholder_image(scene_number: int) -> bytes | None:
     """Generate a sharp 1024×576 news placeholder image with scene badge and styling."""
     if Image is None:
         return None
 
     width, height = 1024, 576
-    bg_color = (22, 31, 48)        # #161F30
-    accent_color = (245, 166, 35)  # #F5A623
+    bg_color = (22, 31, 48)
+    accent_color = (245, 166, 35)
 
     img = Image.new("RGB", (width, height), bg_color)
     draw = ImageDraw.Draw(img)
 
-    # Gradient-like background bands
     for i in range(height):
         ratio = i / height
         r = int(18 * (1 - ratio) + 26 * ratio)
@@ -155,18 +134,10 @@ def _create_placeholder_image(scene_number: int) -> bytes | None:
         b = int(40 * (1 - ratio) + 60 * ratio)
         draw.line([(0, i), (width, i)], fill=(r, g, b))
 
-    # Outer border
-    draw.rectangle(
-        [16, 16, width - 17, height - 17],
-        outline=accent_color,
-        width=3,
-    )
-
-    # Top news banner header
+    draw.rectangle([16, 16, width - 17, height - 17], outline=accent_color, width=3)
     draw.rectangle([16, 16, width - 17, 70], fill=(14, 20, 32))
     draw.line([(16, 70), (width - 17, 70)], fill=accent_color, width=2)
 
-    # Fonts
     header_font = None
     label_font = None
     for fname in ("arial.ttf", "segoeui.ttf", "calibri.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
@@ -182,11 +153,9 @@ def _create_placeholder_image(scene_number: int) -> bytes | None:
     if label_font is None:
         label_font = ImageFont.load_default()
 
-    # Draw header title
     draw.text((36, 30), "AI NEWS BROADCAST", fill=(240, 244, 248), font=header_font)
     draw.text((width - 180, 30), "1080p HD", fill=accent_color, font=header_font)
 
-    # Scene center badge
     badge_w, badge_h = 360, 110
     badge_x = (width - badge_w) // 2
     badge_y = (height - badge_h) // 2 - 30
@@ -208,7 +177,6 @@ def _create_placeholder_image(scene_number: int) -> bytes | None:
         font=label_font,
     )
 
-    # Filmstrip decoration along top and bottom
     for y in (0, height - 12):
         draw.rectangle([0, y, width, y + 12], fill=(10, 14, 22))
         for x in range(0, width, 48):

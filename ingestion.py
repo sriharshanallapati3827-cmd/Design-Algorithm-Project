@@ -2,6 +2,7 @@
 Ingestion Module — AI NEWS Video Generator
 ===========================================
 Provides helpers for extracting article text from URLs, PDFs, and raw text.
+Uses resilient HTTP sessions with automatic retries and timeouts.
 
 Functions:
     extract_text_from_url  — Scrape article body from a web page.
@@ -10,9 +11,15 @@ Functions:
 """
 
 import re
-import requests
+import time
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+
+from network_utils import (
+    get_resilient_session,
+    DEFAULT_TIMEOUT,
+    NETWORK_EXCEPTIONS,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -21,29 +28,26 @@ from pypdf import PdfReader
 _MAX_PDF_PAGES = 5
 _MAX_PDF_BYTES = 5 * 1024 * 1024  # 5 MB
 
-_REQUEST_TIMEOUT = 15  # seconds
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/120.0.0.0 Safari/537.36"
-)
-
 # Tags that typically contain non-article boilerplate
-_STRIP_TAGS = ["script", "style", "header", "footer", "nav", "aside",
-               "form", "noscript", "iframe", "svg"]
+_STRIP_TAGS = [
+    "script", "style", "header", "footer", "nav", "aside",
+    "form", "noscript", "iframe", "svg"
+]
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def extract_text_from_url(url: str) -> str:
+def extract_text_from_url(url: str, timeout: tuple[int, int] = DEFAULT_TIMEOUT) -> str:
     """Fetch a web page and return its main body text (paragraph content).
 
     Parameters
     ----------
     url : str
         Full URL of the article to scrape.
+    timeout : tuple[int, int], optional
+        (connect_timeout, read_timeout) in seconds.
 
     Returns
     -------
@@ -56,29 +60,39 @@ def extract_text_from_url(url: str) -> str:
         If the URL is unreachable, returns a non-200 status, or yields
         no readable paragraph text.
     """
-    try:
-        resp = requests.get(
-            url,
-            timeout=_REQUEST_TIMEOUT,
-            headers={"User-Agent": _USER_AGENT},
-        )
-        resp.raise_for_status()
-    except requests.exceptions.MissingSchema:
-        raise ValueError(
-            f"Invalid URL format: '{url}'. Please include http:// or https://."
-        )
-    except requests.exceptions.ConnectionError:
-        raise ValueError(
-            f"Could not connect to '{url}'. Check the URL and your internet connection."
-        )
-    except requests.exceptions.Timeout:
-        raise ValueError(
-            f"Request to '{url}' timed out after {_REQUEST_TIMEOUT}s."
-        )
-    except requests.exceptions.HTTPError as exc:
-        raise ValueError(
-            f"HTTP error {resp.status_code} when fetching '{url}': {exc}"
-        )
+    import requests
+
+    session = get_resilient_session()
+    last_exc = None
+
+    for attempt in range(1, 3):
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            last_exc = None
+            break
+        except requests.exceptions.MissingSchema:
+            raise ValueError(
+                f"Invalid URL format: '{url}'. Please include http:// or https://."
+            )
+        except requests.exceptions.HTTPError as exc:
+            raise ValueError(
+                f"HTTP error {exc.response.status_code if exc.response else 'unknown'} "
+                f"when fetching '{url}': {exc}"
+            )
+        except NETWORK_EXCEPTIONS as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(3.0)
+                continue
+            raise ValueError(
+                f"Connection error or timeout reaching '{url}' after retries: {exc}"
+            )
+        except Exception as exc:
+            raise ValueError(f"Failed to fetch '{url}': {exc}")
+
+    if last_exc:
+        raise ValueError(f"Could not connect to '{url}': {last_exc}")
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
@@ -88,8 +102,10 @@ def extract_text_from_url(url: str) -> str:
             tag.decompose()
 
     # Extract paragraph text
-    paragraphs = [p.get_text(separator=" ", strip=True)
-                  for p in soup.find_all("p")]
+    paragraphs = [
+        p.get_text(separator=" ", strip=True)
+        for p in soup.find_all("p")
+    ]
     text = "\n\n".join(p for p in paragraphs if p)
 
     if not text.strip():
@@ -102,32 +118,10 @@ def extract_text_from_url(url: str) -> str:
 
 
 def extract_text_from_pdf(pdf_file, max_pages: int = _MAX_PDF_PAGES) -> str:
-    """Read text from a PDF file object (e.g. a Streamlit ``UploadedFile``).
-
-    Parameters
-    ----------
-    pdf_file : file-like
-        A readable binary stream (must support ``.read()``/``.seek()``).
-        Must also expose a ``.size`` attribute **or** be seekable so the
-        byte length can be determined.
-    max_pages : int, optional
-        Reject PDFs with more pages than this (default 5).
-
-    Returns
-    -------
-    str
-        Concatenated and cleaned text from the PDF pages.
-
-    Raises
-    ------
-    ValueError
-        If the file exceeds size or page-count limits, or contains no
-        extractable text.
-    """
-    # --- Size check ---
+    """Read text from a PDF file object (e.g. a Streamlit ``UploadedFile``)."""
+    # Size check
     size = getattr(pdf_file, "size", None)
     if size is None:
-        # Fallback: seek to end to measure
         pos = pdf_file.tell()
         pdf_file.seek(0, 2)
         size = pdf_file.tell()
@@ -139,7 +133,7 @@ def extract_text_from_pdf(pdf_file, max_pages: int = _MAX_PDF_PAGES) -> str:
             f"{_MAX_PDF_BYTES / (1024*1024):.0f} MB limit."
         )
 
-    # --- Read pages ---
+    # Read pages
     pdf_file.seek(0)
     reader = PdfReader(pdf_file)
 
@@ -167,14 +161,7 @@ def extract_text_from_pdf(pdf_file, max_pages: int = _MAX_PDF_PAGES) -> str:
 
 
 def clean_text_input(raw_text: str) -> str:
-    """Normalise whitespace and trim raw text.
-
-    - Collapses multiple consecutive blank lines into a single blank line.
-    - Collapses runs of spaces/tabs within a line into a single space.
-    - Strips leading/trailing whitespace.
-    """
-    # Collapse runs of whitespace within lines (preserve newlines)
+    """Normalise whitespace and trim raw text."""
     text = re.sub(r"[^\S\n]+", " ", raw_text)
-    # Collapse 3+ consecutive newlines into 2 (one blank line)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

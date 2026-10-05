@@ -1,12 +1,14 @@
 streamlit>=1.30.0
 Pillow>=10.0.0
 google-genai
+groq
 pypdf
 beautifulsoup4
-requests
+requests>=2.31.0
+urllib3
 python-dotenv
 
-# Phase 3 — Local GPU Image Engine
+# Phase 3 — Local GPU / Cloud Image Engine
 torch
 torchvision
 diffusers>=0.28.0
@@ -14,11 +16,12 @@ transformers
 accelerate
 safetensors
 
-# Phase 4 — Audio TTS
+# Phase 4 — Audio TTS & Fallbacks
 edge-tts
+gtts
 
 # Phase 5 — Video Assembly Engine
-moviepy
+moviepy>=2.0.0
 imageio-ffmpeg
 
 # Testing

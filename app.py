@@ -2,6 +2,9 @@
 AI NEWS Video Generator — Streamlit Frontend
 ==============================================
 Main application file implementing the UI from FRONTEND_SPEC.md.
+Features real-time WebSocket heartbeat yielding, resilient cloud execution,
+dual-mode visual engine (Local GPU / Pollinations Cloud), Neural TTS,
+and automated MoviePy 2.x video assembly.
 
 Run with:  streamlit run app.py
 """
@@ -20,7 +23,7 @@ from utils import (
 from ingestion import extract_text_from_url, extract_text_from_pdf, clean_text_input
 from director import generate_storyboard, MODEL_MAP
 
-# Phase 3 — Local GPU image engine (optional; falls back to placeholders)
+# Phase 3 — Visual engine (Local GPU or Pollinations Cloud API)
 try:
     from generator import (
         generate_scene_image,
@@ -32,7 +35,7 @@ try:
 except ImportError:
     GPU_ENGINE_AVAILABLE = False
 
-# Phase 4 — Neural TTS audio engine (optional; falls back gracefully)
+# Phase 4 — Neural TTS audio engine
 try:
     from audio import (
         generate_scene_audio,
@@ -53,7 +56,7 @@ except ImportError:
     def get_voice_options():
         return dict(VOICES)
 
-# Phase 5 — Video rendering engine (optional; falls back gracefully)
+# Phase 5 — Video rendering engine
 try:
     from video_engine import (
         assemble_full_video,
@@ -63,7 +66,7 @@ try:
 except ImportError:
     VIDEO_ENGINE_AVAILABLE = False
 
-    def assemble_full_video(*_a, **_kw):  # type: ignore[misc]
+    def assemble_full_video(*_a, **_kw):
         raise ImportError("moviepy is not installed. Run: pip install moviepy imageio-ffmpeg")
 
 # ---------------------------------------------------------------------------
@@ -77,14 +80,11 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Inject custom CSS for the spec's dark-mode palette & gold accents
 st.markdown(
     """
     <style>
-    /* ---- Google Font Import ---- */
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-    /* ---- Global overrides & Design Tokens ---- */
     :root {
         --bg-primary: #0B0F17;
         --bg-secondary: #121824;
@@ -97,7 +97,6 @@ st.markdown(
         --font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
 
-    /* Global typography application (preserving Streamlit icon fonts) */
     html, body, .stApp {
         font-family: var(--font-family);
         letter-spacing: -0.01em;
@@ -107,7 +106,6 @@ st.markdown(
         font-family: var(--font-family) !important;
     }
 
-    /* Preserve Material Symbols & Streamlit icon ligatures */
     span[data-testid="stIconMaterial"],
     [class*="material-symbols"],
     [class*="material-icons"],
@@ -117,7 +115,6 @@ st.markdown(
         font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
     }
 
-    /* Clean, modern styling for the collapsed sidebar double arrow */
     div[data-testid="stSidebarCollapsedControl"] {
         display: flex !important;
         align-items: center !important;
@@ -135,9 +132,6 @@ st.markdown(
         cursor: pointer !important;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
         transition: all 0.2s ease !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
     }
 
     button[data-testid="collapsedControl"]:hover,
@@ -153,37 +147,10 @@ st.markdown(
         font-size: 1.3rem !important;
     }
 
-    /* Collapse button when sidebar is open */
-    div[data-testid="stSidebarCollapseButton"] button {
-        background-color: transparent !important;
-        border: 1px solid transparent !important;
-        border-radius: 6px !important;
-        transition: all 0.2s ease !important;
-    }
-
-    div[data-testid="stSidebarCollapseButton"] button:hover {
-        border-color: var(--border-color) !important;
-        background-color: var(--bg-primary) !important;
-    }
-
-    div[data-testid="stSidebarCollapseButton"] button span {
-        color: var(--accent) !important;
-    }
-
-    p, span:not([data-testid="stIconMaterial"]), li, div {
-        line-height: 1.55;
-    }
-
-    /* Full width flexible main containers */
     .stApp {
         background-color: var(--bg-primary);
         width: 100%;
         max-width: 100%;
-        overflow-x: hidden;
-    }
-
-    .main {
-        width: 100%;
         overflow-x: hidden;
     }
 
@@ -193,71 +160,12 @@ st.markdown(
         width: 100% !important;
         overflow-x: hidden;
         min-height: 100vh !important;
-        display: flex !important;
-        flex-direction: column !important;
-        justify-content: center !important;
     }
 
-    /* ------------------------------------------------------------- */
-    /* 2. Sidebar Transitions & Layout                              */
-    /* ------------------------------------------------------------- */
     section[data-testid="stSidebar"] {
         background-color: var(--bg-secondary) !important;
-        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-                    width 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
     }
 
-    section[data-testid="stSidebar"] > div {
-        padding-top: clamp(1rem, 2.5vw, 2rem) !important;
-        padding-left: clamp(0.75rem, 2vw, 1.25rem) !important;
-        padding-right: clamp(0.75rem, 2vw, 1.25rem) !important;
-    }
-
-    /* ------------------------------------------------------------- */
-    /* 3. Input Type Container (Flexbox)                             */
-    /* ------------------------------------------------------------- */
-    div[data-testid="stTabs"] [role="tablist"],
-    .stTabs [data-baseweb="tab-list"] {
-        display: flex !important;
-        flex-direction: row !important;
-        align-items: center !important;
-        justify-content: space-between !important;
-        gap: clamp(8px, 1.5vw, 16px) !important;
-        width: 100% !important;
-        flex-wrap: wrap !important;
-        border-bottom: 1px solid var(--border-color) !important;
-        padding-bottom: 6px !important;
-        margin-bottom: 12px !important;
-    }
-
-    div[data-testid="stTabs"] [role="tab"],
-    .stTabs [data-baseweb="tab"] {
-        flex: 1 1 auto !important;
-        min-width: 75px !important;
-        text-align: center !important;
-        justify-content: center !important;
-        padding: clamp(6px, 1.2vw, 10px) clamp(8px, 1.5vw, 14px) !important;
-        border-radius: 6px !important;
-        transition: all 0.2s ease-in-out !important;
-        font-size: clamp(0.76rem, 1vw + 0.45rem, 0.88rem) !important;
-        font-weight: 500 !important;
-    }
-
-    /* Flexible components with percentage widths */
-    div[data-testid="stTextInput"],
-    div[data-testid="stTextArea"],
-    div[data-testid="stFileUploader"],
-    div[data-testid="stSelectbox"],
-    div[data-testid="stSlider"],
-    div[data-testid="stButton"] {
-        width: 100% !important;
-        box-sizing: border-box !important;
-    }
-
-    /* ------------------------------------------------------------- */
-    /* 4. Fluid Typography & Styled Components                       */
-    /* ------------------------------------------------------------- */
-    /* Brand header */
     .brand-header {
         text-align: center;
         padding: clamp(0.5rem, 2vw, 1rem) 0 clamp(0.25rem, 1vw, 0.5rem);
@@ -269,16 +177,13 @@ st.markdown(
         font-weight: 700 !important;
         letter-spacing: clamp(1px, 0.2vw, 2px);
         margin-bottom: 0 !important;
-        word-break: break-word;
     }
     .brand-header p {
         color: var(--text-muted);
         font-size: clamp(0.72rem, 1.2vw + 0.35rem, 0.84rem);
         margin-top: 4px;
-        font-weight: 400;
     }
 
-    /* Scene estimation badge */
     .scene-badge {
         background: var(--bg-primary);
         border: 1px solid var(--accent);
@@ -293,30 +198,6 @@ st.markdown(
         box-sizing: border-box;
     }
 
-    /* Pro-tips container */
-    .pro-tips {
-        background: var(--bg-primary);
-        border: 1px solid var(--border-color);
-        border-radius: 8px;
-        padding: clamp(10px, 2vw, 16px);
-        margin-top: 12px;
-        width: 100%;
-        box-sizing: border-box;
-    }
-    .pro-tips h4 {
-        color: var(--accent) !important;
-        font-size: clamp(0.78rem, 1.2vw + 0.45rem, 0.9rem) !important;
-        font-weight: 600 !important;
-        margin-bottom: 8px !important;
-    }
-    .pro-tips li {
-        color: var(--text-muted);
-        font-size: clamp(0.72rem, 1vw + 0.4rem, 0.84rem);
-        margin-bottom: 4px;
-        line-height: 1.5;
-    }
-
-    /* Warning note */
     .warning-note {
         background: rgba(245, 166, 35, 0.08);
         border-left: 3px solid var(--accent);
@@ -330,38 +211,6 @@ st.markdown(
         line-height: 1.5;
     }
 
-    /* Top Navigation Header & DEPLOY button */
-    .top-deploy-nav {
-        position: fixed;
-        top: 14px;
-        right: 24px;
-        z-index: 99999;
-        display: flex;
-        align-items: center;
-    }
-
-    .deploy-btn {
-        font-family: var(--font-family) !important;
-        color: #FFFFFF !important;
-        font-size: 0.82rem !important;
-        font-weight: 700 !important;
-        letter-spacing: 3px !important;
-        text-transform: uppercase !important;
-        cursor: pointer !important;
-        padding: 5px 12px !important;
-        border-radius: 4px !important;
-        background: transparent !important;
-        border: 1px solid rgba(255, 255, 255, 0.18) !important;
-        transition: all 0.2s ease !important;
-    }
-
-    .deploy-btn:hover {
-        border-color: var(--accent) !important;
-        color: var(--accent) !important;
-        background: rgba(245, 166, 35, 0.08) !important;
-    }
-
-    /* Centered Empty state in both height and width */
     .empty-state-container {
         display: flex !important;
         flex-direction: column !important;
@@ -391,12 +240,10 @@ st.markdown(
     }
     .empty-state h2 {
         color: var(--accent) !important;
-        letter-spacing: clamp(1px, 0.3vw, 2.5px);
         font-size: clamp(1.3rem, 2.8vw + 0.5rem, 1.95rem) !important;
         font-weight: 800 !important;
         line-height: 1.25 !important;
-        text-shadow: 0 0 24px rgba(245, 166, 35, 0.35), 0 0 48px rgba(245, 166, 35, 0.15);
-        word-break: break-word;
+        text-shadow: 0 0 24px rgba(245, 166, 35, 0.35);
         margin-bottom: 0.75rem !important;
     }
     .empty-state p {
@@ -408,7 +255,6 @@ st.markdown(
         line-height: 1.6;
     }
 
-    /* Scene card */
     .scene-card {
         background: var(--bg-secondary);
         border: 1px solid var(--border-color);
@@ -438,61 +284,14 @@ st.markdown(
         font-size: clamp(0.75rem, 1vw + 0.45rem, 0.88rem);
     }
 
-    /* Loading pipeline steps */
     .pipeline-step {
         padding: clamp(4px, 1vw, 8px) 0;
         font-size: clamp(0.8rem, 1.2vw + 0.45rem, 0.95rem);
     }
-    .pipeline-step.done {
-        color: #4CAF50;
-    }
-    .pipeline-step.active {
-        color: var(--accent);
-    }
-    .pipeline-step.pending {
-        color: var(--text-muted);
-    }
+    .pipeline-step.done { color: #4CAF50; }
+    .pipeline-step.active { color: var(--accent); }
+    .pipeline-step.pending { color: var(--text-muted); }
 
-    /* ------------------------------------------------------------- */
-    /* 1. Mobile Media Queries (<= 768px)                            */
-    /* ------------------------------------------------------------- */
-    @media (max-width: 768px) {
-        /* Sidebar full width when active on mobile */
-        section[data-testid="stSidebar"] {
-            width: 100% !important;
-            max-width: 100% !important;
-        }
-
-        /* Streamlit columns stack vertically on mobile */
-        div[data-testid="stHorizontalBlock"] {
-            flex-direction: column !important;
-            gap: 1rem !important;
-        }
-
-        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-            width: 100% !important;
-            min-width: 100% !important;
-            flex: 1 1 100% !important;
-        }
-
-        /* Adjust scene card layout on mobile */
-        .scene-card-header {
-            flex-direction: column;
-            align-items: flex-start;
-        }
-
-        /* Full width buttons */
-        div[data-testid="stButton"] button {
-            width: 100% !important;
-        }
-
-        /* Compact padding on mobile */
-        .empty-state {
-            padding: 2.5rem 0.75rem;
-        }
-    }
-
-    /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header[data-testid="stHeader"] {background: var(--bg-primary) !important;}
@@ -513,7 +312,6 @@ if "demo_text" not in st.session_state:
     st.session_state.demo_text = ""
 if "generation_done" not in st.session_state:
     st.session_state.generation_done = False
-# Persisted inputs — survive st.rerun() during generation
 if "input_url" not in st.session_state:
     st.session_state.input_url = ""
 if "input_pdf" not in st.session_state:
@@ -528,14 +326,12 @@ if "article_text" not in st.session_state:
     st.session_state.article_text = ""
 if "last_error" not in st.session_state:
     st.session_state.last_error = ""
-# Phase 4 — Audio state
 if "audio_voice" not in st.session_state:
     st.session_state.audio_voice = DEFAULT_VOICE
 if "scene_audio" not in st.session_state:
-    st.session_state.scene_audio = {}  # {scene_number: bytes}
-# Phase 5 — Video state
+    st.session_state.scene_audio = {}
 if "video_bytes" not in st.session_state:
-    st.session_state.video_bytes = None   # bytes of the rendered MP4
+    st.session_state.video_bytes = None
 if "video_render_error" not in st.session_state:
     st.session_state.video_render_error = ""
 
@@ -544,7 +340,6 @@ if "video_render_error" not in st.session_state:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    # ---- A. Brand Header ----
     st.markdown(
         """
         <div class="brand-header">
@@ -556,9 +351,7 @@ with st.sidebar:
     )
     st.divider()
 
-    # ---- B. Multi-Source Ingestion ----
     st.markdown("##### 📥 News Source Input")
-
     tab_url, tab_pdf, tab_text = st.tabs(["🔗 URL", "📄 PDF Upload", "📝 Raw Text"])
 
     with tab_url:
@@ -588,7 +381,6 @@ with st.sidebar:
             label_visibility="collapsed",
         )
 
-    # Constraint warning
     st.markdown(
         '<div class="warning-note">⚠️ Long articles will automatically be '
         "summarized into a concise news script tailored for a 1–2 minute "
@@ -598,7 +390,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- C. Duration Control ----
     st.markdown("##### ⏱️ Target Duration")
     duration = st.slider(
         "Duration (seconds)",
@@ -619,30 +410,23 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- E. Director Model Selector ----
     st.markdown("##### 🤖 Director Model")
     model = st.selectbox(
         "Select model",
         options=[
-            "Gemini 3.6 Flash",       # gemini-3.6-flash       — confirmed working ✓
-            "Gemini 3.5 Flash Lite",  # gemini-3.5-flash-lite  — confirmed working ✓
-            "Claude 3.5 Sonnet",      # inactive — guarded below
+            "Gemini 3.6 Flash",
+            "Gemini 3.5 Flash Lite",
+            "Claude 3.5 Sonnet",
         ],
         label_visibility="collapsed",
-        help=(
-            "Gemini 3.6 Flash is the recommended primary model. "
-            "Gemini 3.5 Flash Lite is the automatic fallback. "
-            "Groq (qwen3.8-27b) activates automatically if all Gemini models fail."
-        ),
+        help="Gemini 3.6 Flash is primary; Gemini 3.5 Flash Lite and Groq Qwen act as fallbacks.",
     )
 
     st.divider()
 
-    # ---- G. Voiceover Voice Selector (Phase 4) ----
     st.markdown("##### 🎙️ Voiceover Voice")
     _voice_options = get_voice_options()
     _voice_display_names = list(_voice_options.keys())
-    # Find default index by matching current audio_voice ID
     _current_voice_id = st.session_state.audio_voice
     _default_idx = next(
         (i for i, v in enumerate(_voice_options.values()) if v == _current_voice_id),
@@ -654,15 +438,10 @@ with st.sidebar:
         index=_default_idx,
         label_visibility="collapsed",
         disabled=not TTS_AVAILABLE,
-        help="Neural news-anchor voices powered by edge-tts"
-        if TTS_AVAILABLE
-        else "Install edge-tts to enable TTS: pip install edge-tts",
     )
-    # Persist selected voice ID
     _selected_voice_id = _voice_options[_selected_voice_name]
     if _selected_voice_id != st.session_state.audio_voice:
         st.session_state.audio_voice = _selected_voice_id
-        # Clear cached audio so new voice is used on next generation
         st.session_state.scene_audio = {}
 
     if TTS_AVAILABLE:
@@ -672,7 +451,6 @@ with st.sidebar:
 
     st.divider()
 
-    # ---- F. Action Buttons ----
     generate_clicked = st.button(
         "🎬  GENERATE AI NEWS STORYBOARD",
         use_container_width=True,
@@ -684,26 +462,22 @@ with st.sidebar:
         use_container_width=True,
     )
 
-    # ---- GPU Status Indicator ----
+    # Status Indicator
     st.divider()
-    st.markdown("##### 🖥️ GPU Engine Status")
+    st.markdown("##### 🖥️ Visual Engine Status")
     if GPU_ENGINE_AVAILABLE:
         gpu = get_gpu_info()
-        if gpu["cuda_available"]:
-            st.success(f"✅ **{gpu['device_name']}**", icon="🟢")
-            st.caption(
-                f"VRAM: {gpu['vram_used_mb']} / {gpu['vram_total_mb']} MB  \n"
-                f"Model: {gpu['model_loaded'] or 'Not loaded yet'}"
-            )
+        if gpu.get("cuda_available"):
+            st.success(f"✅ **{gpu['device_name']} (Local GPU)**", icon="🟢")
+            st.caption(f"VRAM: {gpu['vram_used_mb']} / {gpu['vram_total_mb']} MB")
         else:
-            st.warning("⚠️ CUDA not available — CPU mode", icon="🟡")
-            st.caption("Images will generate slowly on CPU.")
+            st.info(f"☁️ **{gpu.get('device_name', 'Cloud Pollinations API')}**", icon="🌐")
+            st.caption("Streaming AI visuals from cloud API.")
     else:
-        st.info("📦 GPU engine not installed", icon="ℹ️")
-        st.caption("Install torch + diffusers for AI images.")
+        st.info("📦 Visual engine using placeholder generator", icon="ℹ️")
 
 # ---------------------------------------------------------------------------
-# Handle button actions
+# Button Actions
 # ---------------------------------------------------------------------------
 
 if demo_clicked:
@@ -717,18 +491,15 @@ if demo_clicked:
     st.rerun()
 
 if generate_clicked:
-    # Claude toast guard
     if model == "Claude 3.5 Sonnet":
         st.toast("⚠️ Anthropic models are currently inactive. Please select a Gemini model.", icon="🚫")
     else:
-        # Check that at least one input source has content
         has_input = bool(url_input) or bool(pdf_file) or bool(raw_text)
         if not has_input:
             st.sidebar.error("Please provide a URL, PDF, or text before generating.")
         elif pdf_file is not None and pdf_file.size > 5 * 1024 * 1024:
             st.sidebar.error("PDF file exceeds the 5MB limit. Please upload a smaller file.")
         else:
-            # Persist inputs into session state so they survive the rerun
             st.session_state.input_url = url_input or ""
             st.session_state.input_pdf = pdf_file
             st.session_state.input_raw_text = raw_text or ""
@@ -748,30 +519,29 @@ if generate_clicked:
 # ---------------------------------------------------------------------------
 
 if st.session_state.generating:
-    # ---- Loading / Pipeline State ----
     st.markdown("## ⚙️ Generating Your News Storyboard…")
 
-    progress_bar = st.progress(0)
+    progress_bar = st.progress(0.0)
     status_container = st.empty()
 
     pipeline_labels = [
         "📥 Ingesting source content…",
         "📝 Generating news script via Gemini…",
-        "🎨 Generating AI scene images…" if GPU_ENGINE_AVAILABLE else "🖼️ Preparing visual placeholders…",
+        "🎨 Generating AI scene visuals…",
         "✅ Assembling storyboard scenes…",
-        "🎙️ Generating voiceover audio for all scenes…",
+        "🎙️ Synthesizing neural voiceover…",
         "🎬 Rendering final MP4 video…",
     ]
     num_steps = len(pipeline_labels)
 
-    def _show_pipeline(active_idx: int):
-        """Render the pipeline step indicators."""
+    def _show_pipeline(active_idx: int, detail: str = ""):
         lines = []
         for j, label in enumerate(pipeline_labels):
             if j < active_idx:
                 lines.append(f'<div class="pipeline-step done">✅ {label}</div>')
             elif j == active_idx:
-                lines.append(f'<div class="pipeline-step active">⏳ {label}</div>')
+                lbl = f"{label} ({detail})" if detail else label
+                lines.append(f'<div class="pipeline-step active">⏳ {lbl}</div>')
             else:
                 lines.append(f'<div class="pipeline-step pending">⬜ {label}</div>')
         status_container.markdown("".join(lines), unsafe_allow_html=True)
@@ -794,15 +564,15 @@ if st.session_state.generating:
         elif saved_raw:
             article_text = clean_text_input(saved_raw)
         else:
-            raise ValueError("No input content found. Please provide a URL, PDF, or text.")
+            raise ValueError("No input content found.")
 
         st.session_state.article_text = article_text
 
-    except (ValueError, Exception) as exc:
+    except Exception as exc:
         st.session_state.last_error = f"Ingestion error: {exc}"
         error_occurred = True
 
-    # ── Step 2: Generate storyboard via Gemini ────────────────────────────
+    # ── Step 2: Generate storyboard ───────────────────────────────────────
     if not error_occurred:
         _show_pipeline(1)
         progress_bar.progress(2 / num_steps)
@@ -815,36 +585,32 @@ if st.session_state.generating:
                 api_key=api_key,
                 model_name=st.session_state.input_model,
             )
-        except (ValueError, RuntimeError, Exception) as exc:
+        except Exception as exc:
             st.session_state.last_error = f"Gemini Director error: {exc}"
             error_occurred = True
 
-    # ── Step 3: Generate AI images (or placeholders) ────────────────────────
+    # ── Step 3: Visual Generation with Heartbeat Yielding ──────────────────
     if not error_occurred:
-        _show_pipeline(2)
-        progress_bar.progress(3 / num_steps)
-
         scenes = []
         total_scenes = len(scenes_raw)
+
         for i, s in enumerate(scenes_raw):
             visual_prompt = s.get("visual_prompt", "")
             scene_num = s.get("scene_number", i + 1)
             img_bytes = None
 
+            # Streamlit Heartbeat: update progress and status on EVERY iteration!
+            sub_progress = (2.0 + (i / total_scenes)) / num_steps
+            progress_bar.progress(min(sub_progress, 0.99))
+            _show_pipeline(2, f"Rendering scene {scene_num}/{total_scenes}")
+
             if GPU_ENGINE_AVAILABLE and visual_prompt:
                 try:
-                    st.toast(
-                        f"🎨 Rendering scene {scene_num}/{total_scenes}…",
-                        icon="🖼️",
-                    )
                     ai_image = generate_scene_image(prompt=visual_prompt)
                     if ai_image is not None:
                         img_bytes = image_to_bytes(ai_image)
-                except Exception:
-                    st.toast(
-                        f"⚠️ Scene {scene_num} AI render failed, using placeholder.",
-                        icon="⚠️",
-                    )
+                except Exception as _render_exc:
+                    st.toast(f"⚠️ Scene {scene_num} render fallback: {_render_exc}", icon="⚠️")
 
             if img_bytes is None:
                 img_bytes = _create_placeholder_image(scene_num)
@@ -859,54 +625,60 @@ if st.session_state.generating:
 
         st.session_state.scenes = scenes
 
-    # ── Step 4: Assemble storyboard done marker ───────────────────────────
+    # ── Step 4: Assembling storyboard done marker ─────────────────────────
     if not error_occurred:
         _show_pipeline(3)
         progress_bar.progress(4 / num_steps)
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    # ── Step 5: Auto-generate TTS audio for ALL scenes ────────────────────
+    # ── Step 5: Auto-generate TTS audio with Heartbeat Yielding ───────────
     if not error_occurred:
         _show_pipeline(4)
-        progress_bar.progress(5 / num_steps)
+        progress_bar.progress(4.5 / num_steps)
 
         if TTS_AVAILABLE:
             _voice = st.session_state.audio_voice
-            for scene in st.session_state.scenes:
+            total_s = len(st.session_state.scenes)
+            for idx, scene in enumerate(st.session_state.scenes):
                 _snum = scene["scene_number"]
                 _text = scene.get("voiceover", "")
                 if not _text.strip():
                     continue
+
+                sub_progress = (4.0 + (idx / total_s)) / num_steps
+                progress_bar.progress(min(sub_progress, 0.99))
+                _show_pipeline(4, f"Synthesizing voiceover {_snum}/{total_s}")
+
                 try:
                     _audio = generate_scene_audio(text=_text, voice=_voice)
                     st.session_state.scene_audio[_snum] = _audio
                 except Exception as _audio_exc:
-                    # Soft-fail: skip this scene's audio, don't abort pipeline
-                    st.toast(
-                        f"⚠️ Audio skipped for scene {_snum}: {_audio_exc}",
-                        icon="🔇",
-                    )
+                    st.toast(f"⚠️ Audio skipped for scene {_snum}: {_audio_exc}", icon="🔇")
         else:
-            st.toast("⚠️ edge-tts not installed — skipping audio generation.", icon="🔇")
+            st.toast("⚠️ edge-tts not installed — skipping audio.", icon="🔇")
 
-    # ── Step 6: Auto-render MP4 video ─────────────────────────────────────
+    # ── Step 6: Render MP4 with Real-Time Callback Heartbeat ──────────────
     if not error_occurred:
         _show_pipeline(5)
-        progress_bar.progress(5.5 / num_steps)
+        progress_bar.progress(5.2 / num_steps)
 
         if VIDEO_ENGINE_AVAILABLE:
             import tempfile as _tempfile
-            import importlib
             import video_engine as _ve
-            importlib.reload(_ve)
 
             _out_path = os.path.join(_tempfile.gettempdir(), "ai_news_output.mp4")
+
+            def _vid_render_heartbeat(frac: float, label: str):
+                overall_frac = (5.0 + frac * 0.95) / num_steps
+                progress_bar.progress(min(overall_frac, 0.99))
+                _show_pipeline(5, label)
+
             try:
                 _ve.assemble_full_video(
                     scenes=st.session_state.scenes,
                     scene_audio=st.session_state.scene_audio,
                     output_path=_out_path,
-                    progress_callback=None,
+                    progress_callback=_vid_render_heartbeat,
                 )
                 with open(_out_path, "rb") as _f:
                     st.session_state.video_bytes = _f.read()
@@ -915,52 +687,36 @@ if st.session_state.generating:
                 except OSError:
                     pass
             except Exception as _vid_exc:
-                # Soft-fail: storyboard is still shown, user can re-render manually
                 st.session_state.video_render_error = str(_vid_exc)
-                st.toast(
-                    f"⚠️ Auto video render failed — you can re-render manually. ({_vid_exc})",
-                    icon="⚠️",
-                )
+                st.toast(f"⚠️ Video assembly notice: {_vid_exc}", icon="⚠️")
         else:
-            st.toast(
-                "📦 moviepy not installed — skipping auto video render.",
-                icon="ℹ️",
-            )
+            st.toast("📦 moviepy not installed — skipping video rendering.", icon="ℹ️")
 
-    # ── Done ───────────────────────────────────────────────────────────────
+    # ── Done ──────────────────────────────────────────────────────────────
     progress_bar.progress(1.0)
-    time.sleep(0.4)
+    time.sleep(0.3)
 
     st.session_state.generating = False
     st.session_state.generation_done = not error_occurred
-
     st.rerun()
 
 elif st.session_state.generation_done and st.session_state.scenes:
-
     _total_scenes = len(st.session_state.scenes)
     _scenes_with_audio = [
         s["scene_number"]
         for s in st.session_state.scenes
         if st.session_state.scene_audio.get(s["scene_number"])
     ]
-    _scenes_missing_audio = [
-        s["scene_number"]
-        for s in st.session_state.scenes
-        if s["scene_number"] not in _scenes_with_audio
-    ]
 
-    # ── TOP: Video Player ─────────────────────────────────────────────────
     st.markdown("## 🎬 Generated News Video")
     st.caption(
-        f"{_total_scenes} scenes · "
-        f"{st.session_state.input_duration} seconds · Model: {st.session_state.input_model}"
+        f"{_total_scenes} scenes · {st.session_state.input_duration} seconds · "
+        f"Model: {st.session_state.input_model}"
     )
 
     if st.session_state.video_bytes:
         st.video(st.session_state.video_bytes)
 
-        # Download + Re-render row
         _vid_col1, _vid_col2, _vid_col3 = st.columns([3, 2, 2])
         with _vid_col1:
             st.download_button(
@@ -976,9 +732,6 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 "🔄 Re-render Updated Video",
                 use_container_width=True,
                 disabled=not VIDEO_ENGINE_AVAILABLE,
-                help="Re-assemble with any edits you made to scenes below."
-                if VIDEO_ENGINE_AVAILABLE
-                else "Install moviepy to enable: pip install moviepy imageio-ffmpeg",
             )
         with _vid_col3:
             st.caption(
@@ -987,44 +740,24 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 else "🔇 No audio attached"
             )
     else:
-        # No video yet (moviepy not installed or auto-render failed)
         _rerender_clicked = False
         if st.session_state.video_render_error:
-            st.error(f"⚠️ Auto-render failed: {st.session_state.video_render_error}")
+            st.error(f"⚠️ Auto-render notification: {st.session_state.video_render_error}")
 
         if VIDEO_ENGINE_AVAILABLE:
-            st.info("🎬 Video will appear here after rendering.", icon="ℹ️")
-            _rerender_clicked = st.button(
-                "🎬 Render MP4 Video",
-                use_container_width=True,
-                type="primary",
-            )
-        else:
-            st.warning(
-                "📦 **moviepy not installed** — install it to render video: "
-                "`pip install moviepy imageio-ffmpeg`",
-                icon="⚠️",
-            )
+            _rerender_clicked = st.button("🎬 Render MP4 Video", use_container_width=True, type="primary")
 
-    if st.session_state.video_render_error and st.session_state.video_bytes:
-        st.error(f"⚠️ Last render error: {st.session_state.video_render_error}")
-
-    # ── Re-render trigger ─────────────────────────────────────────────────
     if _rerender_clicked and VIDEO_ENGINE_AVAILABLE:
         import tempfile as _tempfile
-        import importlib
         import video_engine as _ve
-        importlib.reload(_ve)
 
         _render_progress = st.progress(0.0, text="Starting render…")
         _render_status = st.empty()
-        st.session_state.video_render_error = ""
 
-        def _render_progress_cb(frac: float, label: str) -> None:
+        def _manual_cb(frac: float, label: str):
             _render_progress.progress(min(frac, 1.0), text=label)
             _render_status.caption(label)
 
-        # Pull latest voiceover edits from widget state into scenes
         for _sc in st.session_state.scenes:
             _key = f"vo_{_sc['scene_number']}"
             if _key in st.session_state:
@@ -1036,7 +769,7 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 scenes=st.session_state.scenes,
                 scene_audio=st.session_state.scene_audio,
                 output_path=_out_path,
-                progress_callback=_render_progress_cb,
+                progress_callback=_manual_cb,
             )
             with open(_out_path, "rb") as _f:
                 st.session_state.video_bytes = _f.read()
@@ -1050,25 +783,10 @@ elif st.session_state.generation_done and st.session_state.scenes:
             st.session_state.video_render_error = str(_exc)
             st.error(f"⚠️ Render failed: {_exc}")
 
-    # ── Audio coverage banner ─────────────────────────────────────────────
+    # Scene Editor
     st.divider()
-    if _scenes_missing_audio:
-        st.warning(
-            f"⚠️ **{len(_scenes_missing_audio)} of {_total_scenes} scenes** have no audio "
-            f"(scenes {', '.join(str(n) for n in _scenes_missing_audio)}). "
-            "Generate audio per-scene below, then click **Re-render Updated Video**.",
-            icon="🔇",
-        )
-    else:
-        st.success(
-            f"✅ All {_total_scenes} scenes have voiceover audio.",
-            icon="🎙️",
-        )
-
-    # ── Scene-by-scene Editor ─────────────────────────────────────────────
     st.markdown("### 🎞️ Scene-by-Scene Editor")
-    st.caption("Edit voiceover scripts or regenerate individual scene images below, then re-render.")
-    st.divider()
+    st.caption("Edit voiceovers or regenerate images below, then re-render.")
 
     for scene in st.session_state.scenes:
         with st.container():
@@ -1087,42 +805,18 @@ elif st.session_state.generation_done and st.session_state.scenes:
             col_img, col_details = st.columns([1, 1.4])
 
             with col_img:
-                # Visual Frame
                 if scene.get("image_bytes"):
-                    st.image(
-                        scene["image_bytes"],
-                        caption=f"Scene {scene['scene_number']} — AI Generated",
-                        use_container_width=True,
-                    )
-                else:
-                    st.info("🖼️ Image placeholder (Pillow not installed)")
+                    st.image(scene["image_bytes"], use_container_width=True)
 
-                rerender_key = f"rerender_{scene['scene_number']}"
                 if GPU_ENGINE_AVAILABLE:
-                    if st.button(
-                        "🔄 Re-render Image",
-                        key=rerender_key,
-                        use_container_width=True,
-                    ):
-                        with st.spinner(f"🎨 Re-rendering scene {scene['scene_number']}…"):
-                            new_image = generate_scene_image(prompt=scene["visual_prompt"])
-                            if new_image is not None:
-                                scene["image_bytes"] = image_to_bytes(new_image)
-                                st.toast(f"✅ Scene {scene['scene_number']} re-rendered!", icon="🎨")
+                    if st.button("🔄 Re-render Visual", key=f"rerender_{scene['scene_number']}", use_container_width=True):
+                        with st.spinner("Rendering visual…"):
+                            new_img = generate_scene_image(prompt=scene["visual_prompt"])
+                            if new_img is not None:
+                                scene["image_bytes"] = image_to_bytes(new_img)
                                 st.rerun()
-                            else:
-                                st.toast(f"⚠️ Re-render failed for scene {scene['scene_number']}.", icon="⚠️")
-                else:
-                    st.button(
-                        "🔄 Re-render Image",
-                        key=rerender_key,
-                        use_container_width=True,
-                        disabled=True,
-                        help="Install torch + diffusers to enable AI re-rendering",
-                    )
 
             with col_details:
-                # Voiceover Script (editable)
                 st.markdown("**📝 Voiceover Script**")
                 st.text_area(
                     "Voiceover",
@@ -1132,90 +826,41 @@ elif st.session_state.generation_done and st.session_state.scenes:
                     label_visibility="collapsed",
                 )
 
-                # Visual Prompt
                 st.markdown("**🎨 Visual Prompt**")
                 st.code(scene["visual_prompt"], language="text")
 
-                # Audio Preview (Phase 4)
-                st.markdown("**🔊 Audio Preview**")
-                _scene_num = scene["scene_number"]
-                _cached_audio = st.session_state.scene_audio.get(_scene_num)
+                _snum = scene["scene_number"]
+                _cached_audio = st.session_state.scene_audio.get(_snum)
 
-                if not TTS_AVAILABLE:
-                    # edge-tts not installed — show disabled state
-                    st.button(
-                        "🎙️ Generate Audio",
-                        key=f"audio_gen_{_scene_num}",
-                        disabled=True,
-                        use_container_width=True,
-                        help="Install edge-tts to enable audio: pip install edge-tts",
-                    )
-                    st.caption("⚠️ edge-tts not installed")
-                elif _cached_audio:
-                    # Audio already generated — show player + regenerate button
-                    st.audio(_cached_audio, format="audio/mp3")
-                    _regen_col, _voice_col = st.columns([1, 1])
-                    with _regen_col:
-                        if st.button(
-                            "🔄 Regenerate",
-                            key=f"audio_regen_{_scene_num}",
-                            use_container_width=True,
-                        ):
-                            # Read live voiceover text (may have been edited)
-                            _live_text = st.session_state.get(
-                                f"vo_{_scene_num}", scene["voiceover"]
-                            )
-                            with st.spinner("🎙️ Regenerating audio…"):
+                if TTS_AVAILABLE:
+                    if _cached_audio:
+                        st.audio(_cached_audio, format="audio/mp3")
+                        if st.button("🔄 Regenerate Audio", key=f"audio_regen_{_snum}", use_container_width=True):
+                            _live_text = st.session_state.get(f"vo_{_snum}", scene["voiceover"])
+                            with st.spinner("Synthesizing audio…"):
                                 try:
-                                    _new_audio = generate_scene_audio(
+                                    st.session_state.scene_audio[_snum] = generate_scene_audio(
                                         text=_live_text,
                                         voice=st.session_state.audio_voice,
-                                    )
-                                    st.session_state.scene_audio[_scene_num] = _new_audio
-                                    st.toast(
-                                        f"✅ Scene {_scene_num} audio updated!",
-                                        icon="🎙️",
                                     )
                                     st.rerun()
                                 except Exception as _exc:
                                     st.error(f"TTS error: {_exc}")
-                    with _voice_col:
-                        # Show active voice label
-                        _vname = next(
-                            (k for k, v in VOICES.items()
-                             if v == st.session_state.audio_voice),
-                            st.session_state.audio_voice,
-                        )
-                        st.caption(f"🎙️ {_vname}")
-                else:
-                    # No audio yet — show Generate button
-                    if st.button(
-                        "🎙️ Generate Audio",
-                        key=f"audio_gen_{_scene_num}",
-                        use_container_width=True,
-                    ):
-                        _live_text = st.session_state.get(
-                            f"vo_{_scene_num}", scene["voiceover"]
-                        )
-                        with st.spinner("🎙️ Synthesising voiceover…"):
-                            try:
-                                _audio_bytes = generate_scene_audio(
-                                    text=_live_text,
-                                    voice=st.session_state.audio_voice,
-                                )
-                                st.session_state.scene_audio[_scene_num] = _audio_bytes
-                                st.toast(
-                                    f"✅ Scene {_scene_num} audio ready!",
-                                    icon="🎙️",
-                                )
-                                st.rerun()
-                            except Exception as _exc:
-                                st.error(f"TTS error: {_exc}")
-
+                    else:
+                        if st.button("🎙️ Generate Audio", key=f"audio_gen_{_snum}", use_container_width=True):
+                            _live_text = st.session_state.get(f"vo_{_snum}", scene["voiceover"])
+                            with st.spinner("Synthesizing audio…"):
+                                try:
+                                    st.session_state.scene_audio[_snum] = generate_scene_audio(
+                                        text=_live_text,
+                                        voice=st.session_state.audio_voice,
+                                    )
+                                    st.rerun()
+                                except Exception as _exc:
+                                    st.error(f"TTS error: {_exc}")
             st.divider()
 
 else:
-    # ---- Error State (if any) ----
     if st.session_state.last_error:
         st.error(f"⚠️ **Generation Failed:** {st.session_state.last_error}")
         col_err1, col_err2 = st.columns([1, 1])
@@ -1232,16 +877,11 @@ else:
                 st.rerun()
         st.divider()
 
-    # ---- Empty State ----
     st.markdown(
         """
-        <div class="top-deploy-nav">
-            <span class="deploy-btn">DEPLOY</span>
-        </div>
         <div class="empty-state-container">
             <div class="empty-state">
                 <div class="icon">🎬</div>
-                <!-- YOUR NEWS STORYBOARD AWAITS -->
                 <h2>YOUR NEWS STORYBOARD<br>AWAITS</h2>
                 <p>
                     Enter a URL, PDF, or text on the left, pick your duration, and watch<br>

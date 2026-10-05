@@ -4,27 +4,11 @@ Director LLM Engine — AI NEWS Video Generator
 Generates a structured news storyboard (JSON array of scenes) by calling the
 Google Gemini API with the ingested article text and target duration.
 
-Falls back automatically to Groq (llama-3.3-70b-versatile → llama-3.1-8b-instant)
+Falls back automatically to Groq (qwen3.8-27b -> openai/gpt-oss-20b)
 if Gemini is unavailable (503 UNAVAILABLE, rate-limit, connection error, etc.).
 
 Public API:
     generate_storyboard(article_text, duration_sec, *, api_key, model_name)
-
-Root-cause fixes applied (2026-09-23):
-    - Broken re-raise in _call_gemini_with_retry: the bare `raise` inside the
-      else-branch fired on BOTH non-retryable errors AND the final retryable
-      attempt, meaning the Gemini chain never reached the next fallback model
-      and never triggered the Groq fallback. Fixed: exhaust retries, then let
-      the caller (generate_storyboard) handle falling through to the next model.
-    - RuntimeError from JSON-parse leaked out of the per-model try/except and
-      broke the entire fallback chain. Fixed: catch RuntimeError per-model the
-      same as transient errors, log it, and continue to the next model / Groq.
-    - Added print() diagnostic lines so the exact model name is logged before
-      every generate_content() call.
-    - MODEL_MAP rationalised: phantom display names like "Gemini 3.6 Flash"
-      and "Gemini 2.5 Flash" are kept as aliases to real API IDs so the UI
-      still works, but only real Gemini API IDs (gemini-2.0-flash,
-      gemini-1.5-flash) reach the wire.
 """
 
 import json
@@ -37,28 +21,26 @@ from google import genai
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# Groq client (optional — graceful if not installed)
+# Groq client (optional)
 # ---------------------------------------------------------------------------
 
 try:
-    from groq import Groq as _GroqClient  # type: ignore[import-untyped]
+    from groq import Groq as _GroqClient
     _GROQ_AVAILABLE = True
 except ImportError:
     _GROQ_AVAILABLE = False
-    _GroqClient = None  # type: ignore[assignment,misc]
+    _GroqClient = None
 
-# Load .env so GEMINI_API_KEY / GROQ_API_KEY are available from the environment
 load_dotenv()
 
 GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
 
 # ---------------------------------------------------------------------------
-# WPM & scene-count math  (from PHASE2_SPEC.md)
+# WPM & scene-count math
 # ---------------------------------------------------------------------------
 
-_WPM_RATE = 2.33  # ≈ 140 words per minute → 2.33 words per second
+_WPM_RATE = 2.33  # ~140 words per minute -> 2.33 words per second
 
-# Reference table from spec (duration_sec → (min_scenes, max_scenes))
 _SCENE_TABLE = [
     (60,  3,  4),
     (100, 5,  7),
@@ -82,51 +64,31 @@ def _estimate_scene_range(duration_sec: int) -> tuple[int, int]:
             hi = round(max0 + frac * (max1 - max0))
             return lo, hi
 
-    return 3, 5  # fallback (shouldn't reach here)
+    return 3, 5
 
 
 # ---------------------------------------------------------------------------
 # Model-ID mapping
 # ---------------------------------------------------------------------------
-# Only REAL Gemini API model IDs are used on the wire.
-# Display names shown in the UI are just human-readable aliases mapped here.
-#
-# Confirmed working IDs (Sep 2025):
-#   gemini-2.0-flash  — high-capacity Flash 2.0 (default)
-#   gemini-1.5-flash  — stable Flash 1.5 (emergency fallback)
-#
-# NOTE: "gemini-1.5-pro", "gemini-2.5-flash", "gemini-3.*" do NOT exist as
-# public API endpoints and will always return 404 / MODEL_NOT_FOUND.
 
 MODEL_MAP: dict[str, str] = {
-    # UI display name            →  Real Gemini API model ID
-    # (audited live against this API key on 2026-09-23)
-    "Gemini 3.6 Flash":          "gemini-3.6-flash",       # confirmed WORKS ✓
-    "Gemini 3.5 Flash Lite":     "gemini-3.5-flash-lite",  # confirmed WORKS ✓
-    # Alias display names kept so persisted session state doesn't break
-    "Gemini 2.0 Flash":          "gemini-3.6-flash",       # old name → real ID
-    "Gemini 2.5 Flash":          "gemini-3.6-flash",       # old name → real ID
-    "Gemini 1.5 Flash":          "gemini-3.5-flash-lite",  # old name → real ID
-    "Gemini 1.5 Flash Lite":     "gemini-3.5-flash-lite",  # old name → real ID
+    "Gemini 3.6 Flash":          "gemini-3.6-flash",
+    "Gemini 3.5 Flash Lite":     "gemini-3.5-flash-lite",
+    "Gemini 2.0 Flash":          "gemini-3.6-flash",
+    "Gemini 2.5 Flash":          "gemini-3.6-flash",
+    "Gemini 1.5 Flash":          "gemini-3.5-flash-lite",
+    "Gemini 1.5 Flash Lite":     "gemini-3.5-flash-lite",
 }
 
-# Ordered list of real Gemini model IDs tried when the primary fails.
-# Primary is gemini-3.6-flash; gemini-3.5-flash-lite is the safe fallback.
 _GEMINI_FALLBACK_CHAIN: list[str] = [
     "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
 ]
 
-# Groq models tried in order — audited live against this Groq account.
-# llama-3.3-70b-versatile is NOT available; use qwen3.8-27b as primary.
 _GROQ_MODEL_CHAIN: list[str] = [
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
 ]
-
-# ---------------------------------------------------------------------------
-# Shared prompt templates (used by both Gemini and Groq)
-# ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
 You are a professional news video director. Given a news article and \
@@ -167,42 +129,20 @@ PRODUCTION PARAMETERS:
 Generate the storyboard JSON now.
 """
 
-# ---------------------------------------------------------------------------
-# Retry configuration
-# ---------------------------------------------------------------------------
+_MAX_RETRIES = 5
+_RETRY_BASE_DELAY = 2.0
+_CONNECT_RETRY_DELAY = 1.0
 
-_MAX_RETRIES = 5            # attempts per model before moving to next
-_RETRY_BASE_DELAY = 2.0     # seconds base; doubles each attempt: 2s, 4s, 8s…
-_CONNECT_RETRY_DELAY = 1.0  # shorter first sleep for pure network blips (DNS etc.)
-
-
-# ---------------------------------------------------------------------------
-# Diagnostic logger (writes to stderr so it shows in terminal + Streamlit logs)
-# ---------------------------------------------------------------------------
 
 def _log(msg: str) -> None:
-    """Print a timestamped diagnostic line to stderr."""
     print(f"[Director] {msg}", file=sys.stderr, flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Error classification
-# ---------------------------------------------------------------------------
-
 def _is_retryable(exc: Exception) -> bool:
-    """
-    Return True for transient errors worth retrying on the SAME model.
-
-    Matches on BOTH the exception message AND the exception class name,
-    because network errors like ConnectError / httpx.ConnectError carry the
-    useful text ('getaddrinfo failed', 'Errno 11001') only in the message,
-    but the word 'connection' appears in the CLASS name, not the message.
-    """
     msg = str(exc).lower()
     cls = type(exc).__name__.lower()
     combined = f"{cls} {msg}"
 
-    # Hard errors — check first so they're never retried
     HARD_ERRORS = (
         "404", "not found", "model_not_found",
         "400", "bad request", "invalid_argument",
@@ -211,35 +151,18 @@ def _is_retryable(exc: Exception) -> bool:
     if any(t in combined for t in HARD_ERRORS):
         return False
 
-    # Transient / capacity signals — retry same model
     RETRYABLE = (
-        # HTTP capacity
         "503", "unavailable", "rate limit", "rate_limit",
         "resource exhausted", "resource_exhausted",
         "quota", "overloaded", "server error", "try again",
-        # Network / DNS — matched on class name OR message
-        "connect",          # ConnectError, ConnectionError, ConnectTimeout
-        "network",          # NetworkError
-        "timeout",          # TimeoutError, ReadTimeout, ConnectTimeout
-        "timed out",
-        "reset by peer",
-        "getaddrinfo",      # [Errno 11001] getaddrinfo failed  ← DNS failure
-        "errno 11001",      # Windows DNS lookup failure
-        "errno 11004",      # Windows DNS no data
-        "name or service",  # Linux: Name or service not known
-        "temporary failure",
-        "eof",              # EOFError / premature stream close
-        "broken pipe",
-        "ssl",              # SSL handshake failures (transient)
+        "connect", "network", "timeout", "timed out",
+        "reset by peer", "getaddrinfo", "errno 11001", "errno 11004",
+        "name or service", "temporary failure", "eof", "broken pipe", "ssl",
     )
     return any(t in combined for t in RETRYABLE)
 
 
 def _is_skip_worthy(exc: Exception) -> bool:
-    """
-    Return True for hard errors where retrying the SAME model is pointless.
-    Includes: model-not-found (404), auth errors (401/403), bad-request (400).
-    """
     msg = str(exc).lower()
     cls = type(exc).__name__.lower()
     combined = f"{cls} {msg}"
@@ -250,30 +173,12 @@ def _is_skip_worthy(exc: Exception) -> bool:
     ))
 
 
-# ---------------------------------------------------------------------------
-# Gemini call helper
-# ---------------------------------------------------------------------------
-
 def _call_gemini_with_retry(
     client: "genai.Client",
     model_id: str,
     user_prompt: str,
     system_prompt: str,
 ) -> str:
-    """
-    Call Gemini with exponential-backoff retries for transient errors.
-
-    FIX: The previous version used a bare `raise` inside the else-branch which
-    fired on BOTH non-retryable errors AND the final retryable attempt, meaning
-    the caller never got a chance to fall through to the next model.
-
-    Corrected behaviour:
-      - Hard / non-retryable error on ANY attempt → raise immediately (caller
-        should skip to next model, not waste retries).
-      - Retryable error on attempts 1..N-1 → sleep and retry.
-      - Retryable error on final attempt → raise so caller falls to next model.
-      - Success → return raw text.
-    """
     last_exc: Exception | None = None
 
     for attempt in range(1, _MAX_RETRIES + 1):
@@ -295,37 +200,29 @@ def _call_gemini_with_retry(
             _log(f"[Gemini ERR]  model={model_id!r}  attempt={attempt}  error={exc!r}")
 
             if _is_skip_worthy(exc):
-                # Hard error (404, auth, bad-request) — no point retrying
                 _log(f"[Gemini SKIP] model={model_id!r}  hard error, skipping model")
-                raise  # propagate to the model chain loop
+                raise
 
             if _is_retryable(exc) and attempt < _MAX_RETRIES:
-                # Network/DNS blips resolve quickly — use short initial sleep.
-                # Capacity errors (503, rate-limit) need longer back-off.
                 _is_network_err = any(
                     t in f"{type(exc).__name__.lower()} {str(exc).lower()}"
                     for t in ("connect", "getaddrinfo", "errno 11", "network",
                               "timeout", "eof", "broken pipe", "ssl")
                 )
-                if _is_network_err:
-                    delay = _CONNECT_RETRY_DELAY * (1.5 ** (attempt - 1))  # 1s, 1.5s, 2.25s…
-                else:
-                    delay = _RETRY_BASE_DELAY * (2 ** (attempt - 1))       # 2s, 4s, 8s…
+                delay = (
+                    _CONNECT_RETRY_DELAY * (1.5 ** (attempt - 1))
+                    if _is_network_err
+                    else _RETRY_BASE_DELAY * (2 ** (attempt - 1))
+                )
                 _log(f"[Gemini WAIT] sleeping {delay:.1f}s before retry…")
                 _time.sleep(delay)
                 continue
 
-            # Final attempt with a retryable error — give up on this model
             _log(f"[Gemini FAIL] model={model_id!r}  all retries exhausted")
-            raise  # let the chain loop catch and move to next model
+            raise
 
-    # Should never reach here
-    raise last_exc  # type: ignore[misc]
+    raise last_exc
 
-
-# ---------------------------------------------------------------------------
-# Groq call helpers
-# ---------------------------------------------------------------------------
 
 def _call_groq(
     groq_key: str,
@@ -333,14 +230,8 @@ def _call_groq(
     user_prompt: str,
     system_prompt: str,
 ) -> str:
-    """
-    Call a Groq-hosted LLM using the official ``groq`` Python client.
-    Returns the raw text content of the first choice message.
-    """
     if not _GROQ_AVAILABLE or _GroqClient is None:
-        raise RuntimeError(
-            "groq package is not installed. Run: pip install groq"
-        )
+        raise RuntimeError("groq package is not installed. Run: pip install groq")
 
     _log(f"[Groq Call]   model={model_id!r}")
     client = _GroqClient(api_key=groq_key)
@@ -364,7 +255,6 @@ def _call_groq_with_retry(
     user_prompt: str,
     system_prompt: str,
 ) -> str:
-    """Call Groq with the same smart retry policy as Gemini."""
     last_exc: Exception | None = None
     for attempt in range(1, _MAX_RETRIES + 1):
         try:
@@ -387,18 +277,10 @@ def _call_groq_with_retry(
                 _time.sleep(delay)
             else:
                 raise
-    raise last_exc  # type: ignore[misc]
+    raise last_exc
 
-
-# ---------------------------------------------------------------------------
-# Scene validation helper (shared between Gemini + Groq paths)
-# ---------------------------------------------------------------------------
 
 def _validate_scenes(scenes: list[dict]) -> None:
-    """
-    Raise RuntimeError if the scene list is empty or missing required keys.
-    Required keys: scene_number, timestamp, narration, visual_prompt.
-    """
     if not scenes:
         raise RuntimeError("LLM returned an empty scene list.")
     for i, scene in enumerate(scenes):
@@ -409,25 +291,12 @@ def _validate_scenes(scenes: list[dict]) -> None:
                 )
 
 
-# ---------------------------------------------------------------------------
-# JSON parsing helper
-# ---------------------------------------------------------------------------
-
 def _parse_scenes_json(raw_text: str) -> list[dict]:
-    """Extract and parse a JSON array from the LLM response.
-
-    Handles common quirks:
-    - Markdown code fences (```json ... ```)
-    - Leading/trailing prose around the array
-    """
     text = raw_text.strip()
-
-    # Strip markdown fences
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
 
-    # Try direct parse first
     try:
         parsed = json.loads(text)
         if isinstance(parsed, list):
@@ -435,7 +304,6 @@ def _parse_scenes_json(raw_text: str) -> list[dict]:
     except json.JSONDecodeError:
         pass
 
-    # Try to find the first [ ... ] block
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if match:
         try:
@@ -451,64 +319,23 @@ def _parse_scenes_json(raw_text: str) -> list[dict]:
     )
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 def generate_storyboard(
     article_text: str,
     duration_sec: int,
     *,
     api_key: str | None = None,
-    model_name: str = "Gemini 2.0 Flash",
+    model_name: str = "Gemini 3.6 Flash",
 ) -> list[dict]:
-    """Call Gemini (with automatic Groq fallback) to produce scene dicts.
-
-    Parameters
-    ----------
-    article_text : str
-        The cleaned article body text.
-    duration_sec : int
-        Target video length in seconds (60-120).
-    api_key : str | None
-        Gemini API key.  Falls back to ``GEMINI_API_KEY`` env var.
-    model_name : str
-        Human-readable model label (key in ``MODEL_MAP``, or raw Gemini ID).
-
-    Returns
-    -------
-    list[dict]
-        Each dict has keys: ``scene_number``, ``timestamp``, ``narration``,
-        ``visual_prompt``.
-
-    Raises
-    ------
-    ValueError
-        If no API key is available or the model name is unsupported.
-    RuntimeError
-        If both Gemini and Groq fail after all retries and models.
-    """
-    # ── Resolve Gemini API key ────────────────────────────────────────────
+    """Call Gemini (with automatic Groq fallback) to produce scene dicts."""
     gemini_key = api_key or os.getenv("GEMINI_API_KEY", "")
 
-    # ── Resolve primary Gemini model ID ──────────────────────────────────
-    # First check MODEL_MAP (covers all display names + aliases)
+    # Resolve model ID
     model_id: str | None = MODEL_MAP.get(model_name)
     if model_id is None:
-        # Accept raw API IDs passed directly (e.g. "gemini-2.0-flash")
-        low = model_name.lower()
-        if "lite" in low or "1.5" in low:
-            model_id = "gemini-1.5-flash"
-        elif "gemini" in low or "flash" in low:
-            model_id = "gemini-2.0-flash"
+        if model_name.startswith("gemini-"):
+            model_id = model_name
         else:
-            # Unknown model — default to safe high-capacity model rather
-            # than raising, so the pipeline continues uninterrupted
-            model_id = "gemini-2.0-flash"
-            _log(
-                f"[Director] Unknown model_name={model_name!r}, "
-                f"defaulting to {model_id!r}"
-            )
+            raise ValueError(f"Unsupported model: '{model_name}'.")
 
     _log(
         f"[Director] generate_storyboard started  "
@@ -516,7 +343,6 @@ def generate_storyboard(
         f"duration={duration_sec}s"
     )
 
-    # ── Build shared prompts ──────────────────────────────────────────────
     target_words = int(duration_sec * _WPM_RATE)
     min_scenes, max_scenes = _estimate_scene_range(duration_sec)
 
@@ -534,8 +360,6 @@ def generate_storyboard(
         max_scenes=max_scenes,
     )
 
-    # ── Phase 1: Try Gemini models in order ──────────────────────────────
-    # Build the chain: requested model first, then remaining fallbacks.
     gemini_chain = [model_id] + [m for m in _GEMINI_FALLBACK_CHAIN if m != model_id]
     _log(f"[Director] Gemini chain: {gemini_chain}")
 
@@ -552,37 +376,22 @@ def generate_storyboard(
                 scenes = _parse_scenes_json(raw)
                 _validate_scenes(scenes)
                 _log(f"[Director] Gemini success with model={attempt_model!r}  scenes={len(scenes)}")
-                return scenes  # SUCCESS
+                return scenes
 
             except Exception as exc:
-                # Catches ALL errors (transient, hard, parse, validation).
-                # Log it, store it, and fall through to the next model.
                 gemini_last_exc = exc
-                _log(
-                    f"[Director] Gemini model={attempt_model!r} FAILED: {exc!r}  "
-                    "-> trying next model"
-                )
-                continue  # try next Gemini model
+                _log(f"[Director] Gemini model={attempt_model!r} FAILED: {exc!r} -> trying next")
+                continue
 
         _log(f"[Director] All Gemini models exhausted. Last error: {gemini_last_exc!r}")
-
     else:
-        gemini_last_exc = ValueError(
-            "No GEMINI_API_KEY provided — skipping Gemini entirely."
-        )
+        gemini_last_exc = ValueError("No Gemini API key provided — skipping Gemini.")
         _log(f"[Director] {gemini_last_exc}")
 
-    # ── Phase 2: Groq fallback ────────────────────────────────────────────
+    # Groq Fallback
     groq_key = GROQ_API_KEY
-    _log(
-        f"[Director] Attempting Groq fallback  "
-        f"available={_GROQ_AVAILABLE}  key_set={bool(groq_key)}"
-    )
-
     if groq_key and _GROQ_AVAILABLE:
         groq_last_exc: Exception | None = None
-        _log(f"[Director] Groq chain: {_GROQ_MODEL_CHAIN}")
-
         for groq_model in _GROQ_MODEL_CHAIN:
             try:
                 raw = _call_groq_with_retry(
@@ -591,36 +400,21 @@ def generate_storyboard(
                 scenes = _parse_scenes_json(raw)
                 _validate_scenes(scenes)
                 _log(f"[Director] Groq success with model={groq_model!r}  scenes={len(scenes)}")
-                return scenes  # SUCCESS via Groq
-
+                return scenes
             except Exception as exc:
                 groq_last_exc = exc
-                _log(f"[Director] Groq model={groq_model!r} FAILED: {exc!r}  -> trying next")
+                _log(f"[Director] Groq model={groq_model!r} FAILED: {exc!r} -> trying next")
                 continue
 
         raise RuntimeError(
             f"All Gemini models failed (last: {gemini_last_exc}) AND "
-            f"all Groq models failed (last: {groq_last_exc}). "
-            "Check your API keys and network connectivity."
+            f"all Groq models failed (last: {groq_last_exc})."
         )
 
-    # ── Phase 3: Surface the best available error message ─────────────────
     if not gemini_key and not groq_key:
-        raise ValueError(
-            "No GEMINI_API_KEY and no GROQ_API_KEY found. "
-            "Set at least one in your .env file."
-        )
+        raise ValueError("No Gemini API key provided and no GROQ_API_KEY found.")
 
     if not _GROQ_AVAILABLE:
-        raise RuntimeError(
-            f"All Gemini models failed. Last error: {gemini_last_exc}\n"
-            "Tip: install the Groq fallback with: pip install groq\n"
-            "     then add GROQ_API_KEY=<key> to your .env file."
-        )
+        raise RuntimeError(f"All Gemini models failed: {gemini_last_exc}")
 
-    # groq package installed but GROQ_API_KEY not set
-    raise RuntimeError(
-        f"All Gemini models failed. Last error: {gemini_last_exc}\n"
-        "Tip: add GROQ_API_KEY=<key> to your .env file to enable "
-        "the automatic Groq fallback."
-    )
+    raise RuntimeError(f"All Gemini models failed. Last error: {gemini_last_exc}")

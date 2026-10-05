@@ -4,11 +4,6 @@ Shared fixtures for the AI NEWS Video Generator test suite.
 
 import pytest
 
-
-# ---------------------------------------------------------------------------
-# Sample data fixtures
-# ---------------------------------------------------------------------------
-
 SAMPLE_HTML = """
 <html>
 <head><title>Test Article</title></head>

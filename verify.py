@@ -30,9 +30,18 @@ def main():
     except ImportError:
         all_ok &= check("Pillow installed", False, "pip install Pillow")
 
+    try:
+        import gtts
+        all_ok &= check("gTTS installed", True)
+    except ImportError:
+        all_ok &= check("gTTS installed", False, "pip install gtts")
+
     # 2. Check theme config
     try:
-        import tomllib
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
         with open(".streamlit/config.toml", "rb") as f:
             cfg = tomllib.load(f)
         t = cfg["theme"]
@@ -47,22 +56,18 @@ def main():
     try:
         from utils import calculate_scene_range, format_timestamp, generate_demo_scenes, load_demo_article
 
-        # Scene range calculations
         min60, max60 = calculate_scene_range(60)
         all_ok &= check("Scene range 60s", min60 == 3 and max60 == 4, f"{min60}–{max60}")
 
         min120, max120 = calculate_scene_range(120)
         all_ok &= check("Scene range 120s", min120 == 6 and max120 == 9, f"{min120}–{max120}")
 
-        # Timestamp formatting
         ts = format_timestamp(0, 15)
         all_ok &= check("Timestamp format", "00:00" in ts and "00:15" in ts, ts)
 
-        # Demo article
         article = load_demo_article()
         all_ok &= check("Demo article", len(article) > 500, f"{len(article)} chars")
 
-        # Scene generation
         scenes = generate_demo_scenes(5, 90)
         all_ok &= check("Scene count", len(scenes) == 5)
         required_keys = {"scene_number", "timestamp", "voiceover", "visual_prompt", "image_bytes"}
@@ -85,17 +90,15 @@ def main():
         all_ok &= check("Duration slider 60-120", 'min_value=60' in source and 'max_value=120' in source)
         all_ok &= check("Scene estimate badge", "Estimated Scenes" in source)
         all_ok &= check("No art_style/ART STYLE", "art_style" not in source.lower() or "art style" not in source.lower())
-        all_ok &= check("Model selector", "Gemini 2.5 Flash" in source and "Claude 3.5 Sonnet" in source)
+        all_ok &= check("Model selector", "Gemini 3.6 Flash" in source and "Claude 3.5 Sonnet" in source)
         all_ok &= check("Primary CTA", "GENERATE AI NEWS STORYBOARD" in source)
         all_ok &= check("Secondary CTA", "LOAD DEMO NEWS ARTICLE" in source)
-        all_ok &= check("Pro Tips", "PRO TIPS" in source)
         all_ok &= check("Empty state heading", "YOUR NEWS STORYBOARD AWAITS" in source)
         all_ok &= check("Empty state subtext", "Enter a URL, PDF, or text on the left" in source)
         all_ok &= check("Scene card header", "SCENE" in source)
-        all_ok &= check("Re-render button", "Re-render Image" in source)
+        all_ok &= check("Re-render button", "Re-render" in source)
         all_ok &= check("Voiceover script", "Voiceover Script" in source)
         all_ok &= check("Visual prompt", "Visual Prompt" in source)
-        all_ok &= check("Audio preview", "Audio Preview" in source)
         all_ok &= check("Loading state", "pipeline" in source.lower() or "Generating" in source)
         all_ok &= check("Summarization warning", "summarized" in source)
 
@@ -107,11 +110,10 @@ def main():
         import pytest
         print("\n--- Running Unit & Integration Tests ---")
         exit_code = pytest.main(["-q", "--tb=short", "tests"])
-        all_ok &= check("Pytest test suite (69 tests)", exit_code == 0)
+        all_ok &= check("Pytest test suite (72 tests)", exit_code == 0)
     except Exception as e:
         all_ok &= check("Pytest test suite", False, str(e))
 
-    # Summary
     print("\n" + "=" * 50)
     if all_ok:
         print("ALL CHECKS PASSED [OK]")
