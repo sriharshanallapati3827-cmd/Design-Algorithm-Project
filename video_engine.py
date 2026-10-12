@@ -31,6 +31,7 @@ try:
     )
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from utils import fit_to_broadcast_canvas
     _VIDEO_ENGINE_AVAILABLE = True
 except ImportError:
     _VIDEO_ENGINE_AVAILABLE = False
@@ -80,8 +81,8 @@ def _render_scene_frame(
     except Exception:
         base_img = Image.new("RGBA", (w, h), (20, 30, 50, 255))
 
-    # Scale to fill target canvas cleanly (e.g. 1024x576)
-    canvas = ImageOps.fit(base_img, (w, h), method=Image.LANCZOS)
+    # Scale to fill target canvas cleanly (e.g. 1024x576) preserving faces and titles
+    canvas = fit_to_broadcast_canvas(base_img, target_width=w, target_height=h)
     if canvas.mode != "RGBA":
         canvas = canvas.convert("RGBA")
 

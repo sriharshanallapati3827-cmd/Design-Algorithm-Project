@@ -57,10 +57,10 @@ def main():
         from utils import calculate_scene_range, format_timestamp, generate_demo_scenes, load_demo_article
 
         min60, max60 = calculate_scene_range(60)
-        all_ok &= check("Scene range 60s", min60 == 3 and max60 == 4, f"{min60}–{max60}")
+        all_ok &= check("Scene range 60s (10-15s)", min60 == 4 and max60 == 6, f"{min60}–{max60}")
 
         min120, max120 = calculate_scene_range(120)
-        all_ok &= check("Scene range 120s", min120 == 6 and max120 == 9, f"{min120}–{max120}")
+        all_ok &= check("Scene range 120s (10-15s)", min120 == 8 and max120 == 12, f"{min120}–{max120}")
 
         ts = format_timestamp(0, 15)
         all_ok &= check("Timestamp format", "00:00" in ts and "00:15" in ts, ts)
@@ -93,7 +93,7 @@ def main():
         all_ok &= check("Model selector", "Gemini 3.6 Flash" in source and "Claude 3.5 Sonnet" in source)
         all_ok &= check("Primary CTA", "GENERATE AI NEWS STORYBOARD" in source)
         all_ok &= check("Secondary CTA", "LOAD DEMO NEWS ARTICLE" in source)
-        all_ok &= check("Empty state heading", "YOUR NEWS STORYBOARD AWAITS" in source)
+        all_ok &= check("Empty state heading", ("YOUR NEWS STORYBOARD AWAITS" in source or "YOUR NEWS STORYBOARD<br>AWAITS" in source))
         all_ok &= check("Empty state subtext", "Enter a URL, PDF, or text on the left" in source)
         all_ok &= check("Scene card header", "SCENE" in source)
         all_ok &= check("Re-render button", "Re-render" in source)

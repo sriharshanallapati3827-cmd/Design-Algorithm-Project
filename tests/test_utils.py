@@ -14,18 +14,18 @@ from utils import (
 class TestCalculateSceneRange:
     def test_60s(self):
         lo, hi = calculate_scene_range(60)
-        assert lo == 3
-        assert hi == 4
+        assert lo == 4
+        assert hi == 6
 
     def test_120s(self):
         lo, hi = calculate_scene_range(120)
-        assert lo == 6
-        assert hi == 9
+        assert lo == 8
+        assert hi == 12
 
     def test_90s(self):
         lo, hi = calculate_scene_range(90)
-        assert lo == 4
-        assert hi == 6
+        assert lo == 6
+        assert hi == 9
 
     def test_minimum_clamp(self):
         lo, hi = calculate_scene_range(10)

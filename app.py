@@ -606,7 +606,8 @@ if st.session_state.generating:
 
             if GPU_ENGINE_AVAILABLE and visual_prompt:
                 try:
-                    ai_image = generate_scene_image(prompt=visual_prompt)
+                    search_q = s.get("search_query") or visual_prompt
+                    ai_image = generate_scene_image(prompt=visual_prompt, search_query=search_q)
                     if ai_image is not None:
                         img_bytes = image_to_bytes(ai_image)
                 except Exception as _render_exc:
@@ -620,6 +621,7 @@ if st.session_state.generating:
                 "timestamp": s.get("timestamp", ""),
                 "voiceover": s.get("narration", ""),
                 "visual_prompt": visual_prompt,
+                "search_query": s.get("search_query", visual_prompt),
                 "image_bytes": img_bytes,
             })
 
@@ -811,7 +813,10 @@ elif st.session_state.generation_done and st.session_state.scenes:
                 if GPU_ENGINE_AVAILABLE:
                     if st.button("🔄 Re-render Visual", key=f"rerender_{scene['scene_number']}", use_container_width=True):
                         with st.spinner("Rendering visual…"):
-                            new_img = generate_scene_image(prompt=scene["visual_prompt"])
+                            new_img = generate_scene_image(
+                                prompt=scene["visual_prompt"],
+                                search_query=scene.get("search_query")
+                            )
                             if new_img is not None:
                                 scene["image_bytes"] = image_to_bytes(new_img)
                                 st.rerun()

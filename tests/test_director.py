@@ -17,33 +17,33 @@ from director import (
 class TestEstimateSceneRange:
     def test_60s_boundary(self):
         lo, hi = _estimate_scene_range(60)
-        assert lo == 3
-        assert hi == 4
+        assert lo == 4
+        assert hi == 6
 
     def test_120s_boundary(self):
         lo, hi = _estimate_scene_range(120)
-        assert lo == 7
-        assert hi == 9
+        assert lo == 8
+        assert hi == 12
 
     def test_100s_boundary(self):
         lo, hi = _estimate_scene_range(100)
-        assert lo == 5
-        assert hi == 7
+        assert lo == 7
+        assert hi == 10
 
     def test_below_minimum_clamps(self):
         lo, hi = _estimate_scene_range(30)
-        assert lo == 3
-        assert hi == 4
+        assert lo == 4
+        assert hi == 6
 
     def test_above_maximum_clamps(self):
         lo, hi = _estimate_scene_range(180)
-        assert lo == 7
-        assert hi == 9
+        assert lo == 8
+        assert hi == 12
 
     def test_midpoint_interpolation(self):
         lo, hi = _estimate_scene_range(80)
-        assert 3 <= lo <= 5
-        assert 4 <= hi <= 7
+        assert 4 <= lo <= 7
+        assert 6 <= hi <= 10
 
     def test_returns_ints(self):
         lo, hi = _estimate_scene_range(90)
@@ -132,7 +132,7 @@ class TestGenerateStoryboard:
         assert len(scenes) == 1
 
     def test_raises_without_api_key(self, sample_article_text):
-        with patch.dict("os.environ", {}, clear=True):
+        with patch.dict("os.environ", {}, clear=True), patch("director.GROQ_API_KEY", None):
             with pytest.raises(ValueError, match=r"(?i)no gemini.*key"):
                 generate_storyboard(sample_article_text, 60, api_key="")
 
@@ -145,6 +145,7 @@ class TestGenerateStoryboard:
             )
 
     @patch("director.genai.Client")
+    @patch("director.GROQ_API_KEY", None)
     def test_raises_on_empty_response(self, mock_client_cls,
                                       sample_article_text):
         mock_client = MagicMock()
@@ -159,6 +160,7 @@ class TestGenerateStoryboard:
             )
 
     @patch("director.genai.Client")
+    @patch("director.GROQ_API_KEY", None)
     def test_raises_on_missing_keys(self, mock_client_cls,
                                     sample_article_text):
         bad_scene = json.dumps([{

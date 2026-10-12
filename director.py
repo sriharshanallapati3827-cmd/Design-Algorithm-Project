@@ -42,14 +42,14 @@ GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
 _WPM_RATE = 2.33  # ~140 words per minute -> 2.33 words per second
 
 _SCENE_TABLE = [
-    (60,  3,  4),
-    (100, 5,  7),
-    (120, 7,  9),
+    (60,  4,  6),
+    (100, 7,  10),
+    (120, 8,  12),
 ]
 
 
 def _estimate_scene_range(duration_sec: int) -> tuple[int, int]:
-    """Linearly interpolate the scene-count range from the spec table."""
+    """Linearly interpolate the scene-count range for 10-15s duration per scene."""
     if duration_sec <= _SCENE_TABLE[0][0]:
         return _SCENE_TABLE[0][1], _SCENE_TABLE[0][2]
     if duration_sec >= _SCENE_TABLE[-1][0]:
@@ -64,7 +64,7 @@ def _estimate_scene_range(duration_sec: int) -> tuple[int, int]:
             hi = round(max0 + frac * (max1 - max0))
             return lo, hi
 
-    return 3, 5
+    return 4, 6
 
 
 # ---------------------------------------------------------------------------
@@ -96,21 +96,22 @@ production parameters, you produce a structured storyboard for a short-form \
 news video.
 
 RULES:
-1. The total narration must fit within {target_words} words \
-(approx {duration_sec}s at 140 WPM).
-2. Split the story into {min_scenes} to {max_scenes} scenes.
-3. Each scene needs a concise, broadcast-quality narration and a detailed \
-visual prompt suitable for AI image generation (1080p landscape, cinematic).
-4. Timestamps must be sequential and cover the full duration.
-5. Return ONLY a valid JSON array - no markdown, no commentary.
+1. Each scene duration must be between 10 and 15 seconds.
+2. Split the story into {min_scenes} to {max_scenes} scenes covering the full duration ({duration_sec}s).
+3. The total narration must fit within {target_words} words (approx {duration_sec}s at 140 WPM).
+4. Each scene narration must be concise (approx 23 to 35 words for 10-15 seconds of speech).
+5. For each scene, provide a "search_query" with 3 to 6 concrete, factual Google image search keywords (mentioning specific entities, people, locations, or products from the article, without buzzwords like 'cinematic' or '1080p') so real news imagery can be retrieved. For people, celebrities, or films, always include names and context (e.g. 'Jr NTR Janhvi Kapoor press conference' or 'movie wide poster banner') to retrieve clear horizontal photos showing faces and titles in-frame.
+6. Timestamps must be sequential and cover 10 to 15 seconds per scene (e.g., '00:00 - 00:12').
+7. Return ONLY a valid JSON array - no markdown, no commentary.
 
 OUTPUT FORMAT (JSON array):
 [
   {{
     "scene_number": 1,
-    "timestamp": "00:00 - 00:15",
-    "narration": "Exact spoken narration text for this scene.",
-    "visual_prompt": "1080p landscape cinematic description for image generation."
+    "timestamp": "00:00 - 00:12",
+    "narration": "Exact spoken broadcast narration text for this scene.",
+    "visual_prompt": "Factual visual description of the scene.",
+    "search_query": "budget smartphones display retail electronics store"
   }}
 ]
 """
@@ -131,7 +132,7 @@ Generate the storyboard JSON now.
 
 _MAX_RETRIES = 5
 _RETRY_BASE_DELAY = 2.0
-_CONNECT_RETRY_DELAY = 1.0
+_CONNECT_RETRY_DELAY = 3.0
 
 
 def _log(msg: str) -> None:
@@ -170,6 +171,7 @@ def _is_skip_worthy(exc: Exception) -> bool:
         "404", "not found", "model_not_found",
         "400", "bad request", "invalid_argument",
         "401", "403", "permission", "unauthorized",
+        "perday", "daily", "generaterequestsperday",
     ))
 
 
@@ -289,6 +291,8 @@ def _validate_scenes(scenes: list[dict]) -> None:
                 raise RuntimeError(
                     f"Scene {i + 1} is missing required key '{required}'."
                 )
+        if not scene.get("search_query"):
+            scene["search_query"] = scene.get("visual_prompt", "")
 
 
 def _parse_scenes_json(raw_text: str) -> list[dict]:

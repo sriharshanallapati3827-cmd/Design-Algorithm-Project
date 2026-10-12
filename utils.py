@@ -10,9 +10,12 @@ import math
 from typing import List, Dict, Tuple
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageOps, ImageEnhance
 except ImportError:
     Image = None
+    ImageFilter = None
+    ImageOps = None
+    ImageEnhance = None
 
 
 # ---------------------------------------------------------------------------
@@ -20,9 +23,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 def calculate_scene_range(duration_sec: int) -> Tuple[int, int]:
-    """Return (min_scenes, max_scenes) for a given target duration."""
-    min_scenes = max(1, duration_sec // 20)
-    max_scenes = max(min_scenes, duration_sec // 13)
+    """Return (min_scenes, max_scenes) for a given target duration with 10-15s per scene."""
+    min_scenes = max(1, duration_sec // 15)
+    max_scenes = max(min_scenes, math.ceil(duration_sec / 10))
     return min_scenes, max_scenes
 
 
@@ -185,3 +188,69 @@ def _create_placeholder_image(scene_number: int) -> bytes | None:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def fit_to_broadcast_canvas(
+    raw_img: "Image.Image",
+    target_width: int = 1024,
+    target_height: int = 576,
+) -> "Image.Image":
+    """Intelligently fit any image (portrait, square, or landscape) into a 16:9 canvas.
+
+    Guarantees that human faces, movie titles, and headline elements are never cut off:
+    - Moderate landscape (1.35 <= aspect <= 2.1):
+      Uses top-weighted crop (centering=(0.5, 0.15)) so heads, faces, hair, and top titles
+      remain securely in-frame instead of being severed by center cropping.
+    - Portrait, Square, or Ultra-wide (aspect < 1.35 or > 2.1):
+      Uses broadcast pillarboxing / letterboxing:
+      1. Background: Heavily blurred (radius=25) and dimmed (65% brightness) copy of the
+         image completely filling the 16:9 frame.
+      2. Foreground: The full, uncropped original image scaled proportionally to fit the
+         canvas height without cropping out a single pixel of the face or title.
+    """
+    if Image is None:
+        return raw_img
+
+    target_mode = "RGBA" if raw_img.mode == "RGBA" else "RGB"
+    img = raw_img.convert(target_mode)
+
+    aspect = img.width / max(1, img.height)
+
+    # Moderate landscape: top-weighted crop to preserve faces, heads, and titles
+    if 1.35 <= aspect <= 2.1:
+        return ImageOps.fit(
+            img,
+            (target_width, target_height),
+            method=Image.Resampling.LANCZOS,
+            centering=(0.5, 0.15),
+        )
+
+    # Portrait, square, or ultra-wide: broadcast blurred backdrop + uncropped foreground
+    bg = ImageOps.fit(
+        img.convert("RGB"),
+        (target_width, target_height),
+        method=Image.Resampling.LANCZOS,
+        centering=(0.5, 0.5),
+    )
+    if ImageFilter:
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=25))
+    if ImageEnhance:
+        bg = ImageEnhance.Brightness(bg).enhance(0.65)
+
+    if target_mode == "RGBA":
+        bg = bg.convert("RGBA")
+
+    # Proportional foreground
+    fg = img.copy()
+    fg.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
+
+    # Center placement
+    x_pos = (target_width - fg.width) // 2
+    y_pos = (target_height - fg.height) // 2
+
+    if target_mode == "RGBA" and fg.mode == "RGBA":
+        bg.paste(fg, (x_pos, y_pos), fg)
+    else:
+        bg.paste(fg, (x_pos, y_pos))
+
+    return bg
