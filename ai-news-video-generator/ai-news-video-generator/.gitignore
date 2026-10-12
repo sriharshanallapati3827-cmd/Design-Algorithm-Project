@@ -1,0 +1,14 @@
+# Virtual environment
+venv/
+.venv/
+
+# Environment keys & secrets
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local image outputs (if any)
+*.png
+*.jpg
